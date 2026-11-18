@@ -309,3 +309,112 @@ test.skipIf(!available)("宿主停止信号沿推送命令传递，已确认回�
   expect(await commands["#推送公告"]!("", owner)).toBe("推送已中断。");
   expect(groups).toEqual([10001]);
 });
+
+test.skipIf(!available)("主人可按历史回执撤回指定群，保留原发送账号及结果", async () => {
+  const client = redis!;
+  const store = createNoticeStore(client);
+  const oldId = (await store.publish("历史公告", "20001"))!;
+  const deletions: Array<readonly [number, number]> = [];
+  let connected = false;
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001, 20002],
+    listGroups: async (botId) => (botId === 20001 ? [10001, 10002] : [10003, 10004]).map((id) => ({ id })),
+    async sendGroup(_botId, groupId) {
+      if (groupId === 10004) throw new Error("消息发送未获确认");
+      return groupId === 10002 ? -81 : 889;
+    },
+    async deleteMessage(botId, messageId) {
+      deletions.push([botId, messageId]);
+      if (botId === 20002 && !connected) {
+        throw Object.assign(new Error("原账号未连接"), { delivery: "not-sent" });
+      }
+      if (messageId === -81) throw new Error("撤回发出后断线");
+    },
+  };
+
+  await createNoticeDelivery(client, host, async () => {}).push();
+  const { commands } = createNoticePlugin(() => client, host);
+  const owner = { isMaster: true, user_id: 20001 };
+  const guest = { isMaster: false, user_id: 20002 };
+  const recall = commands["#撤回已发公告"]!;
+
+  expect(await commands["#撤回公告"]("", owner)).toBe("当前公告已撤回。");
+  expect(deletions).toEqual([]);
+  const newId = (await store.publish("新公告", "20001"))!;
+  expect(await recall("", owner)).toContain(`公告 ${newId} 没有可撤回`);
+  expect(await recall(oldId, guest)).toContain("仅机器人主人");
+  expect(await recall(`${oldId} 10001`, owner)).toContain("撤回已确认 1");
+  expect(deletions).toEqual([[20001, 889]]);
+
+  const batch = await recall(oldId, owner);
+  expect(batch).toContain("撤回已确认 0 · 撤回未发出 1 · 撤回未确认 1");
+  expect(batch).toContain("已跳过 1");
+  expect(deletions).toEqual([[20001, 889], [20001, -81], [20002, 889]]);
+  connected = true;
+  expect(await recall(oldId, owner)).toContain("撤回已确认 1");
+  expect(deletions).toEqual([[20001, 889], [20001, -81], [20002, 889], [20002, 889]]);
+
+  const replies = await commands["#公告推送回执"]!(oldId, owner);
+  expect(replies).toContain("机器人 20001 · 确认送达 · 消息 889 · 撤回已确认");
+  expect(replies).toContain("机器人 20001 · 确认送达 · 消息 -81 · 撤回结果未确认");
+  expect(replies).toContain("机器人 20002 · 确认送达 · 消息 889 · 撤回已确认");
+  expect(replies).toContain("群 10004 · 机器人 20002 · 发出结果未确认");
+  expect((await store.current())?.id).toBe(newId);
+});
+
+test.skipIf(!available)("并发撤回、宿主取消和回执落盘失败均保留最多一次尝试", async () => {
+  const client = redis!;
+  const noticeId = (await createNoticeStore(client).publish("撤回操作测试", "20001"))!;
+  const deletions: number[] = [];
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const abort = new AbortController();
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001],
+    listGroups: async () => [{ id: 10001 }, { id: 10002 }, { id: 10003 }],
+    sendGroup: async (_botId, groupId) => groupId,
+    async deleteMessage(_botId, messageId) {
+      deletions.push(messageId);
+      if (messageId === 10001) {
+        started.resolve();
+        await release.promise;
+        abort.abort();
+      }
+    },
+  };
+  const create = () => createNoticeDelivery(client, host, async () => {});
+  await create().push();
+  const first = create().recall({ noticeId, signal: abort.signal });
+  await started.promise;
+  try {
+    expect(await create().recall({ noticeId, groupId: 10001 })).toMatchObject({
+      selected: 1, alreadyClaimed: 1, receipts: [],
+    });
+  } finally {
+    release.resolve();
+    expect(await first).toMatchObject({
+      stopped: "cancelled", receipts: [{ groupId: 10001, recall: "confirmed" }],
+    });
+  }
+  expect(deletions).toEqual([10001]);
+
+  const fault: NoticeRedis = {
+    ...client,
+    async eval(script, options) {
+      if (options.arguments[1]?.includes('"recall":"pending"') && options.keys[0] === `notice:delivery:${noticeId}`) {
+        throw new Error("模拟撤回结果写入失败");
+      }
+      return client.eval(script, options);
+    },
+  };
+  expect(await createNoticeDelivery(fault, host).recall({ noticeId })).toMatchObject({
+    stopped: "storage-error", alreadyClaimed: 1, receipts: [],
+  });
+  expect(deletions).toEqual([10001, 10002]);
+  expect((await create().receipts(noticeId))?.receipts[1]).toMatchObject({ groupId: 10002, recall: "pending" });
+
+  expect(await create().recall({ noticeId })).toMatchObject({
+    alreadyClaimed: 2, receipts: [{ groupId: 10003, recall: "confirmed" }],
+  });
+  expect(deletions).toEqual([10001, 10002, 10003]);
+});

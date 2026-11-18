@@ -84,7 +84,7 @@ export function createNoticePlugin(
 
     "#公告帮助": (_argument: string, context: CommandContext) =>
       context?.isMaster === true ? [memberHelp, ownerHelp, ...(deliveryHost
-        ? ["#推送公告", "#公告推送回执 [编号] [页码]"] : [])].join("\n") : memberHelp,
+        ? ["#推送公告", "#公告推送回执 [编号] [页码]", "#撤回已发公告 [编号] [群号]"] : [])].join("\n") : memberHelp,
 
     "#发布公告": owner((content, context) => {
       const creator = context.user_id;
@@ -136,6 +136,36 @@ export function createNoticePlugin(
         pushing = false;
       }
     }),
+    "#撤回已发公告": owner(async (argument) => {
+      const [first, target, ...rest] = argument.trim() ? argument.trim().split(/\s+/u) : [];
+      const noticeId = first?.toUpperCase();
+      const groupId = target === undefined ? undefined : Number(target);
+      if ((noticeId !== undefined && !/^\d{5}[A-Z]{3}$/u.test(noticeId)) || rest.length ||
+          (target !== undefined && (!/^[1-9]\d*$/u.test(target) || !Number.isSafeInteger(groupId)))) {
+        return "用法：#撤回已发公告 [编号] [群号]";
+      }
+      const redis = getRedis();
+      if (!redis) return "公告存储未连接。";
+
+      try {
+        const result = await createNoticeDelivery(redis, deliveryHost).recall({ noticeId, groupId, signal });
+        if (!result.noticeId) return result.stopped === "cancelled" ? "撤回已中断。" : "当前没有可撤回的公告。";
+        if (!result.selected) return `公告 ${result.noticeId} 没有可撤回的已确认消息。`;
+        const count = (state: "confirmed" | "not-sent" | "unknown") =>
+          result.receipts.filter((receipt) => receipt.recall === state).length;
+        const lines = [
+          `公告 ${result.noticeId} · ${result.selected} 条已确认发送的消息`,
+          `撤回已确认 ${count("confirmed")} · 撤回未发出 ${count("not-sent")} · 撤回未确认 ${count("unknown")}`,
+        ];
+        if (result.alreadyClaimed) lines.push(`已跳过 ${result.alreadyClaimed} 条已有撤回记录的消息。`);
+        if (result.stopped === "storage-error") lines.push("撤回记录写入未确认，已停止后续撤回。");
+        if (result.stopped === "cancelled") lines.push("撤回已中断。");
+        lines.push(`发送 #公告推送回执 ${result.noticeId} 查看逐群结果。`);
+        return lines.join("\n");
+      } catch {
+        return "已发公告撤回未完成，请查看回执。";
+      }
+    }),
     "#公告推送回执": owner(async (argument) => {
       const [first, second, ...rest] = argument.trim() ? argument.trim().split(/\s+/u) : [];
       const noticeId = first && /^\d{5}[A-Z]{3}$/u.test(first.toUpperCase()) ? first.toUpperCase() : undefined;
@@ -164,7 +194,13 @@ export function createNoticePlugin(
 
 function describeReceipt(receipt: DeliveryReceipt): string {
   switch (receipt.state) {
-    case "confirmed": return `确认送达 · 消息 ${receipt.messageId}`;
+    case "confirmed": {
+      const suffix = receipt.recall && {
+        confirmed: "撤回已确认", "not-sent": "撤回未发出",
+        unknown: "撤回结果未确认", pending: "撤回等待确认或进程中断",
+      }[receipt.recall];
+      return [`确认送达 · 消息 ${receipt.messageId}`, suffix].filter(Boolean).join(" · ");
+    }
     case "not-sent": return "确认未发出";
     case "unknown": return "发出结果未确认";
     case "pending": return "等待确认或进程中断";

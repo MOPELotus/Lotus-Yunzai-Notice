@@ -11,8 +11,9 @@ export interface NoticeDeliveryHost {
 
 type Destination = { botId: number; groupId: number };
 type DeliveryState = "pending" | "confirmed" | "not-sent" | "unknown";
+type RecallState = DeliveryState;
 export type DeliveryReceipt = Destination & (
-  | { state: "confirmed"; messageId: number }
+  | { state: "confirmed"; messageId: number; recall?: RecallState }
   | { state: Exclude<DeliveryState, "confirmed"> }
 );
 
@@ -23,6 +24,15 @@ type Result = {
   alreadyClaimed: number;
   discoveryFailures: number;
   stopped?: "cancelled" | "notice-changed" | "storage-error";
+};
+
+type RecallOptions = { noticeId?: string; groupId?: number; signal?: AbortSignal };
+type RecallResult = {
+  noticeId?: string;
+  selected: number;
+  receipts: Array<Extract<DeliveryReceipt, { state: "confirmed" }>>;
+  alreadyClaimed: number;
+  stopped?: "cancelled" | "storage-error";
 };
 
 const noticeIdPattern = /^\d{5}[A-Z]{3}$/u;
@@ -60,13 +70,30 @@ end
 return 1
 `;
 
-function readReceipt(raw: string): DeliveryReceipt {
-  const { botId, groupId, state, messageId } = JSON.parse(raw) as {
-    botId: unknown; groupId: unknown; state: unknown; messageId?: unknown;
+const replaceReceipt = `
+if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then return 0 end
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
+return 1
+`;
+
+function unconfirmed(error: unknown): "not-sent" | "unknown" {
+  return error instanceof Error && "delivery" in error && error.delivery === "not-sent"
+    ? "not-sent" : "unknown";
+}
+
+function recallState(value: unknown): value is RecallState {
+  return value === "pending" || value === "confirmed" || value === "not-sent" || value === "unknown";
+}
+
+function readReceipt(group: string, raw: string): DeliveryReceipt {
+  const { botId, groupId, state, messageId, recall } = JSON.parse(raw) as {
+    botId: unknown; groupId: unknown; state: unknown; messageId?: unknown; recall?: unknown;
   };
-  if (id(botId) && id(groupId)) {
+  if (id(botId) && id(groupId) && String(groupId) === group) {
     if (state === "confirmed" && typeof messageId === "number" && Number.isSafeInteger(messageId)) {
-      return { botId, groupId, state, messageId };
+      if (recall === undefined) return { botId, groupId, state, messageId };
+      if (recallState(recall)) return { botId, groupId, state, messageId, recall };
+      throw new Error("公告撤回回执格式无效");
     }
     if (state === "pending" || state === "not-sent" || state === "unknown") {
       return { botId, groupId, state };
@@ -85,8 +112,7 @@ async function send(host: NoticeDeliveryHost, notice: Notice, target: Destinatio
   } catch (error) {
     return {
       ...target,
-      state: error instanceof Error && "delivery" in error && error.delivery === "not-sent"
-        ? "not-sent" : "unknown",
+      state: unconfirmed(error),
     };
   }
 }
@@ -99,6 +125,14 @@ export function createNoticeDelivery(
 ) {
   const notices = createNoticeStore(redis);
   const targets = createTargetStore(redis);
+
+  async function readEntries(noticeId: string) {
+    if (!noticeIdPattern.test(noticeId)) throw new Error("公告编号无效");
+    const entries = await redis.hGetAll(receiptKey(noticeId));
+    return Object.entries(entries).map(([group, raw]) => ({
+      raw, receipt: readReceipt(group, raw),
+    })).sort((a, b) => a.receipt.groupId - b.receipt.groupId);
+  }
 
   return {
     async push(signal?: AbortSignal): Promise<Result> {
@@ -174,16 +208,65 @@ export function createNoticeDelivery(
       return signal?.aborted ? { ...result, stopped: "cancelled" } : result;
     },
 
+    async recall({ noticeId, groupId, signal }: RecallOptions = {}): Promise<RecallResult> {
+      const result: RecallResult = { selected: 0, receipts: [], alreadyClaimed: 0 };
+      if (signal?.aborted) return { ...result, stopped: "cancelled" };
+      if (groupId !== undefined && !id(groupId)) throw new Error("公告目标群无效");
+
+      const resolved = noticeId ?? (await notices.current())?.id;
+      if (resolved === undefined) return result;
+      result.noticeId = resolved;
+      const candidates = (await readEntries(resolved)).filter(({ receipt }) =>
+        receipt.state === "confirmed" && (groupId === undefined || receipt.groupId === groupId));
+      result.selected = candidates.length;
+
+      for (const { raw, receipt } of candidates) {
+        if (signal?.aborted) return { ...result, stopped: "cancelled" };
+        if (receipt.state !== "confirmed") continue;
+        if (receipt.recall !== undefined && receipt.recall !== "not-sent") {
+          result.alreadyClaimed++;
+          continue;
+        }
+
+        const key = receiptKey(resolved);
+        const group = String(receipt.groupId);
+        const pending = JSON.stringify({ ...receipt, recall: "pending", recallAttempt: crypto.randomUUID() });
+        try {
+          const claim = await redis.eval(replaceReceipt, {
+            keys: [key], arguments: [group, raw, pending],
+          });
+          if (claim === 0) {
+            result.alreadyClaimed++;
+            continue;
+          }
+          if (claim !== 1) return { ...result, stopped: "storage-error" };
+
+          let recall: RecallState = "not-sent";
+          if (!signal?.aborted) {
+            try {
+              await host.deleteMessage(receipt.botId, receipt.messageId);
+              recall = "confirmed";
+            } catch (error) {
+              recall = unconfirmed(error);
+            }
+          }
+          const updated = { ...receipt, recall };
+          const saved = await redis.eval(replaceReceipt, {
+            keys: [key], arguments: [group, pending, JSON.stringify(updated)],
+          });
+          if (saved !== 1) return { ...result, stopped: "storage-error" };
+          result.receipts.push(updated);
+        } catch {
+          return { ...result, stopped: "storage-error" };
+        }
+      }
+      return signal?.aborted ? { ...result, stopped: "cancelled" } : result;
+    },
+
     async receipts(noticeId?: string): Promise<{ noticeId: string; receipts: DeliveryReceipt[] } | undefined> {
       const resolved = noticeId ?? (await notices.current())?.id;
       if (resolved === undefined) return;
-      if (!noticeIdPattern.test(resolved)) throw new Error("公告编号无效");
-
-      const entries = await redis.hGetAll(receiptKey(resolved));
-      return {
-        noticeId: resolved,
-        receipts: Object.values(entries).map(readReceipt).sort((a, b) => a.groupId - b.groupId),
-      };
+      return { noticeId: resolved, receipts: (await readEntries(resolved)).map(({ receipt }) => receipt) };
     },
   };
 }
