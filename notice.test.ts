@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createNoticePlugin } from "./index.ts";
+import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
 import { createNoticeDelivery, type NoticeDeliveryHost } from "./delivery.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
+import { parseNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
 
 const serverPath = Bun.which("valkey-server");
 const cliPath = Bun.which("valkey-cli");
@@ -417,4 +418,188 @@ test.skipIf(!available)("并发撤回、宿主取消和回执落盘失败均保�
     alreadyClaimed: 2, receipts: [{ groupId: 10003, recall: "confirmed" }],
   });
   expect(deletions).toEqual([10001, 10002, 10003]);
+});
+
+function fakeScheduleClock(iso: string) {
+  let current = Date.parse(iso);
+  const callbacks = new Map<() => void, number>();
+  return {
+    now: () => current,
+    get planned() { return [...callbacks.values()]; },
+    schedule(callback: () => void, delay: number) {
+      callbacks.set(callback, current + delay);
+      return () => { callbacks.delete(callback); };
+    },
+    advance(to: string) {
+      current = Date.parse(to);
+      for (const [callback, due] of callbacks.entries()) {
+        if (due > current) continue;
+
+        callbacks.delete(callback);
+        callback();
+      }
+    },
+  };
+}
+
+async function waitFor(assertion: () => unknown | Promise<unknown>) {
+  let failure: unknown;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      failure = error;
+      await Bun.sleep(25);
+    }
+  }
+  throw failure;
+}
+
+test("沿用旧定时字段，兼容默认窗口与旧短写法", () => {
+  expect(parseNoticeSchedule("enableSchedule: false\nscheduleTime: 无效")).toBeUndefined();
+  expect(parseNoticeSchedule("enableSchedule: true")).toEqual({ start: 480, end: 510 });
+  expect(parseNoticeSchedule("enableSchedule: true\nscheduleTime: '8:00-30'")).toEqual({ start: 480, end: 510 });
+  expect(parseNoticeSchedule("scheduleTime: '8:55-9:05'")).toEqual({ start: 535, end: 545 });
+  expect(() => parseNoticeSchedule("scheduleTime: '8:60-8:30'")).toThrow("无效");
+  expect(() => parseNoticeSchedule("enableSchedule: 'false'")).toThrow("布尔值");
+});
+
+test.skipIf(!available)("北京时间触发实际定时投递，并发和同分钟重启只执行一次", async () => {
+  const client = redis!;
+  const store = createNoticeStore(client);
+  const noticeId = (await store.publish("工作日定时推送", "20001"))!;
+  const timer = fakeScheduleClock("2026-11-19T07:59:00+08:00");
+  const window = parseNoticeSchedule("enableSchedule: true\nscheduleTime: '8:00-8:00'")!;
+  const requests: number[] = [];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001],
+    listGroups: async () => [{ id: 10001 }],
+    async sendGroup(_bot, group, content) {
+      expect(content).toContain("工作日定时推送");
+      requests.push(group);
+      return 70001;
+    },
+    async deleteMessage() {},
+  };
+  const first = startNoticeScheduler(() => client, host, window, undefined, timer);
+  const second = startNoticeScheduler(() => client, host, window, undefined, timer);
+  let restarted: (() => Promise<void>) | undefined;
+  try {
+    expect(timer.planned).toEqual([Date.parse("2026-11-19T00:00:00Z"), Date.parse("2026-11-19T00:00:00Z")]);
+    expect(requests).toEqual([]);
+    timer.advance("2026-11-19T08:00:00+08:00");
+    await waitFor(async () => {
+      expect(JSON.parse(await exec("GET", "notice:schedule:2026-11-19") as string)).toEqual({
+        state: "completed", noticeId,
+      });
+      expect(timer.planned).toHaveLength(2);
+    });
+    expect((await createNoticeDelivery(client, host).receipts(noticeId))?.receipts).toEqual([
+      { botId: 20001, groupId: 10001, state: "confirmed", messageId: 70001 },
+    ]);
+    await Promise.all([first(), second()]);
+    restarted = startNoticeScheduler(() => client, host, window, undefined, timer);
+    timer.advance("2026-11-19T08:00:30+08:00");
+    await waitFor(() => expect(timer.planned).toEqual([Date.parse("2026-11-20T08:00:00+08:00")]));
+    expect(requests).toEqual([10001]);
+  } finally {
+    await Promise.all([first(), second(), restarted?.()]);
+  }
+});
+
+test.skipIf(!available)("启动不会补跑错过的窗口，公告换版不会替换已选择的定时快照", async () => {
+  const client = redis!;
+  const store = createNoticeStore(client);
+  await store.publish("定时目标", "20001");
+  const now = fakeScheduleClock("2026-11-19T08:01:00+08:00");
+  const window = parseNoticeSchedule("scheduleTime: '8:00-8:00'")!;
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001],
+    listGroups: async () => [{ id: 10001 }],
+    async sendGroup() { throw new Error("不能推送非计划公告"); },
+    async deleteMessage() {},
+  };
+  let swapped = false;
+  const fault: NoticeRedis = {
+    ...client,
+    async eval(script, options) {
+      if (!swapped && options.keys[0] === "notice:schedule:2026-11-20") {
+        await store.publish("新的非计划公告", "20001");
+        swapped = true;
+      }
+      return client.eval(script, options);
+    },
+  };
+  const dispose = startNoticeScheduler(() => fault, host, window, undefined, now);
+  try {
+    expect(now.planned).toEqual([Date.parse("2026-11-20T08:00:00+08:00")]);
+    expect(await exec("GET", "notice:schedule:2026-11-19")).toBeNull();
+    now.advance("2026-11-20T08:00:00+08:00");
+    await waitFor(async () => expect(await exec("GET", "notice:schedule:2026-11-20")).toBe('{"state":"skipped"}'));
+    expect(swapped).toBe(true);
+    expect((await createNoticeDelivery(client, host).receipts())?.receipts).toEqual([]);
+  } finally {
+    await dispose();
+  }
+});
+
+test.skipIf(!available)("关闭时等待在途确认，重启跳过状态已开始的同一计划", async () => {
+  const client = redis!;
+  const noticeId = (await createNoticeStore(client).publish("关闭定时测试", "20001"))!;
+  const timer = fakeScheduleClock("2026-11-19T08:00:00+08:00");
+  const window = parseNoticeSchedule("scheduleTime: '8:00-8:00'")!;
+  const started = Promise.withResolvers<void>();
+  const gateway = Promise.withResolvers<number>();
+  const controller = new AbortController();
+  const requests: number[] = [];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001],
+    listGroups: async () => [{ id: 10001 }, { id: 10002 }],
+    async sendGroup(_botId, groupId) {
+      requests.push(groupId);
+      started.resolve();
+      return gateway.promise;
+    },
+    async deleteMessage() {},
+  };
+  const dispose = startNoticeScheduler(() => client, host, window, controller.signal, timer);
+  timer.advance("2026-11-19T08:00:00+08:00");
+  await started.promise;
+  expect(JSON.parse(await exec("GET", "notice:schedule:2026-11-19") as string)).toEqual({ state: "started", noticeId });
+  const restart = startNoticeScheduler(() => client, host, window, undefined, timer);
+  try {
+    timer.advance("2026-11-19T08:00:20+08:00");
+    await waitFor(() => expect(timer.planned).toEqual([Date.parse("2026-11-20T08:00:00+08:00")]));
+    expect(requests).toEqual([10001]);
+    controller.abort();
+    let disposed = false;
+    const close = dispose().then(() => { disposed = true; });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+
+    gateway.resolve(70001);
+    await close;
+    expect(JSON.parse(await exec("GET", "notice:schedule:2026-11-19") as string)).toEqual({ state: "cancelled", noticeId });
+    expect((await createNoticeDelivery(client, host).receipts(noticeId))?.receipts).toEqual([
+      { botId: 20001, groupId: 10001, state: "confirmed", messageId: 70001 },
+    ]);
+    expect(requests).toEqual([10001]);
+
+    const file = join(temp!, "old-notice.yaml");
+    await writeFile(file, "enableSchedule: true\nscheduleTime: '8:00-8:30'\n");
+    const previous = Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG;
+    try {
+      Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG = file;
+      const module = createModule({ groups: host, signal: controller.signal });
+      expect(module.dispose).toBeFunction();
+      await module.dispose?.();
+    } finally {
+      if (previous === undefined) delete Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG;
+      else Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG = previous;
+    }
+  } finally {
+    gateway.resolve(70001);
+    await Promise.all([dispose(), restart()]);
+  }
 });

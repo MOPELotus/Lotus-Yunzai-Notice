@@ -99,10 +99,12 @@ export function createNoticeStore(redis: NoticeRedis) {
   }
 
   return {
-    async current() {
+    async current(unpushedOnly = false) {
       const id = await redis.get(currentKey);
       if (!id || !validId.test(id)) return;
-      return activeNotice(id, await redis.hGetAll(announcementPrefix + id));
+      const entry = await redis.hGetAll(announcementPrefix + id);
+      if (unpushedOnly && (entry.status !== "当前" || entry.push !== "未推送")) return;
+      return activeNotice(id, entry);
     },
 
     async history() {

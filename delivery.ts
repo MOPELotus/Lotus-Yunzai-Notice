@@ -135,10 +135,10 @@ export function createNoticeDelivery(
   }
 
   return {
-    async push(signal?: AbortSignal): Promise<Result> {
+    async push(signal?: AbortSignal, scheduled?: Notice): Promise<Result> {
       const result: Result = { selected: 0, receipts: [], alreadyClaimed: 0, discoveryFailures: 0 };
       if (signal?.aborted) return { ...result, stopped: "cancelled" };
-      const notice = await notices.current();
+      const notice = scheduled ?? await notices.current();
       if (!notice) return result;
       result.noticeId = notice.id;
       const destinations = new Map<number, Destination & { interval: number }>();

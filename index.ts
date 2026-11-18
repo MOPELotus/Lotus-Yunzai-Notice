@@ -1,4 +1,5 @@
 import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost } from "./delivery.ts";
+import { configuredNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
 import { createTargetCommands } from "./target-commands.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
 
@@ -38,8 +39,12 @@ function contentError(content: string): string | undefined {
   if ([...content].length > maxContent) return `公告内容最多 ${maxContent} 个字符。`;
 }
 
+function hostRedis() {
+  return (globalThis as { redis?: NoticeRedis }).redis;
+}
+
 export function createNoticePlugin(
-  getRedis: () => NoticeRedis | undefined = () => (globalThis as { redis?: NoticeRedis }).redis,
+  getRedis: () => NoticeRedis | undefined = hostRedis,
   deliveryHost?: NoticeDeliveryHost,
   signal?: AbortSignal,
 ) {
@@ -207,8 +212,16 @@ function describeReceipt(receipt: DeliveryReceipt): string {
   }
 }
 
-export function createModule({ groups, signal }: { groups: NoticeDeliveryHost; signal?: AbortSignal }) {
-  return createNoticePlugin(undefined, groups, signal);
+export function createModule({ groups, signal }: { groups: NoticeDeliveryHost; signal?: AbortSignal }):
+  ReturnType<typeof createNoticePlugin> & { dispose?: () => Promise<void> } {
+  const module = createNoticePlugin(hostRedis, groups, signal);
+  try {
+    const window = configuredNoticeSchedule();
+    if (window) return { ...module, dispose: startNoticeScheduler(hostRedis, groups, window, signal) };
+  } catch {
+    console.warn("[notice] 无法读取公告定时配置，定时推送未启动。");
+  }
+  return module;
 }
 
 export default createNoticePlugin();
