@@ -41,6 +41,7 @@ function contentError(content: string): string | undefined {
 export function createNoticePlugin(
   getRedis: () => NoticeRedis | undefined = () => (globalThis as { redis?: NoticeRedis }).redis,
   deliveryHost?: NoticeDeliveryHost,
+  signal?: AbortSignal,
 ) {
   function withStore(handler: (store: Store) => Promise<string>): Promise<string> | string {
     const redis = getRedis();
@@ -114,8 +115,8 @@ export function createNoticePlugin(
 
       pushing = true;
       try {
-        const result = await createNoticeDelivery(redis, deliveryHost).push();
-        if (!result.noticeId) return "当前没有可推送的公告。";
+        const result = await createNoticeDelivery(redis, deliveryHost).push(signal);
+        if (!result.noticeId) return result.stopped === "cancelled" ? "推送已中断。" : "当前没有可推送的公告。";
         const count = (state: DeliveryReceipt["state"]) =>
           result.receipts.filter((receipt) => receipt.state === state).length;
         const lines = [
@@ -170,8 +171,8 @@ function describeReceipt(receipt: DeliveryReceipt): string {
   }
 }
 
-export function createModule({ groups }: { groups: NoticeDeliveryHost }) {
-  return createNoticePlugin(undefined, groups);
+export function createModule({ groups, signal }: { groups: NoticeDeliveryHost; signal?: AbortSignal }) {
+  return createNoticePlugin(undefined, groups, signal);
 }
 
 export default createNoticePlugin();

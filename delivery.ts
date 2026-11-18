@@ -112,8 +112,10 @@ export function createNoticeDelivery(
         if (signal?.aborted) return { ...result, stopped: "cancelled" };
         try {
           const settings = await targets.settings(String(botId));
+          if (signal?.aborted) return { ...result, stopped: "cancelled" };
           if (!settings.account?.enabled) continue;
           const groups = await host.listGroups(botId);
+          if (signal?.aborted) return { ...result, stopped: "cancelled" };
           for (const selected of selectNoticeGroups(settings, groups.map((group) => group.id).filter(id))) {
             const groupId = Number(selected);
             if (!destinations.has(groupId)) {

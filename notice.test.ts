@@ -281,3 +281,31 @@ test.skipIf(!available)("并发推送只发一次，公告改动和调用方中�
     "confirmed", "confirmed", "confirmed",
   ]);
 });
+
+test.skipIf(!available)("宿主停止信号沿推送命令传递，已确认回执保留且不再发送下一群", async () => {
+  const client = redis!;
+  const noticeId = (await createNoticeStore(client).publish("停止信号测试", "20001"))!;
+  const controller = new AbortController();
+  const groups: number[] = [];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001],
+    listGroups: async () => [{ id: 10001 }, { id: 10002 }],
+    async sendGroup(_botId, groupId) {
+      groups.push(groupId);
+      controller.abort();
+      return 70001;
+    },
+    async deleteMessage() {},
+  };
+  const { commands } = createNoticePlugin(() => client, host, controller.signal);
+  const owner = { isMaster: true, user_id: 20001 };
+
+  expect(await commands["#推送公告"]!("", owner)).toContain("推送已中断");
+  expect(groups).toEqual([10001]);
+  const receipts = await createNoticeDelivery(client, host).receipts(noticeId);
+  expect(receipts?.receipts).toEqual([
+    { state: "confirmed", botId: 20001, groupId: 10001, messageId: 70001 },
+  ]);
+  expect(await commands["#推送公告"]!("", owner)).toBe("推送已中断。");
+  expect(groups).toEqual([10001]);
+});
