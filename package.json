@@ -1,0 +1,9 @@
+{
+  "name": "@lotus-yunzai/notice",
+  "private": true,
+  "type": "module",
+  "exports": "./index.ts",
+  "lotusYunzai": {
+    "entry": "./index.ts"
+  }
+}
