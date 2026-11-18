@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNoticePlugin } from "./index.ts";
-import type { NoticeRedis } from "./store.ts";
+import { createNoticeStore, type NoticeRedis } from "./store.ts";
+import { createNoticeDelivery, type NoticeDeliveryHost } from "./delivery.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
 
 const serverPath = Bun.which("valkey-server");
@@ -47,6 +48,10 @@ beforeAll(async () => {
     lRange: async (key, first, last) => await exec("LRANGE", key, String(first), String(last)) as string[],
     eval: (script, { keys, arguments: args }) => exec("EVAL", script, String(keys.length), ...keys, ...args),
   };
+});
+
+beforeEach(async () => {
+  if (available) await exec("FLUSHDB");
 });
 
 afterAll(async () => {
@@ -138,4 +143,141 @@ test.skipIf(!available)("沿用旧全局名单和账号配置，筛选真实群�
   await expect(store.settings(account)).rejects.toThrow("名单格式无效");
   expect(await commands["#公告账号白名单添加"]!("10007", owner)).toContain("名单格式");
   expect(await exec("HGET", accountKey, "whitelist")).toBe('{"unexpected":true}');
+});
+
+test.skipIf(!available)("即时推送记录逐群确认，只重试明确未发出的请求", async () => {
+  const store = createNoticeStore(redis!);
+  const noticeId = (await store.publish("正文 [CQ:at,qq=all]\n第二行", "20001"))!;
+  await exec("SADD", "notice:whitelist", "10001", "10002", "10003", "10004");
+  const attempts: Array<readonly [number, number]> = [];
+  let resumableError = true;
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001, 20002, 20003],
+    async listGroups(botId) {
+      if (botId === 20003) throw new Error("不可读取群列表");
+      return (botId === 20001 ? [10001, 10002, 10003, 10004] : [10001, 10005]).map((id) => ({ id }));
+    },
+    async sendGroup(botId, groupId, content) {
+      expect(content).toContain("正文 [CQ:at,qq=all]\n第二行");
+      attempts.push([botId, groupId]);
+      if (groupId === 10002 && resumableError) {
+        throw Object.assign(new Error("未发送"), { delivery: "not-sent" });
+      }
+      if (groupId === 10003) throw new Error("超时");
+      if (groupId === 10004) return Number.NaN;
+      return -groupId;
+    },
+    async deleteMessage() { throw new Error("即时推送不删除消息"); },
+  };
+  const waits: number[] = [];
+  const create = () => createNoticeDelivery(redis!, host, async (ms) => { waits.push(ms); });
+  await exec("HSET", "notice:account:20001:config", "pushInterval", "500");
+  const first = await create().push();
+  expect(first).toMatchObject({ noticeId, selected: 4, alreadyClaimed: 0, discoveryFailures: 1 });
+  expect(first.receipts.map(({ state }) => state)).toEqual(["confirmed", "not-sent", "unknown", "unknown"]);
+  expect(attempts).toEqual([[20001, 10001], [20001, 10002], [20001, 10003], [20001, 10004]]);
+  expect(waits).toHaveLength(3);
+  expect(waits.every((ms) => ms > 0 && ms <= 500)).toBe(true);
+  expect(await exec("HGET", "notice:ann:" + noticeId, "push")).toBe("已推送");
+  expect(Number(await exec("TTL", "notice:delivery:" + noticeId))).toBeGreaterThan(
+    Number(await exec("TTL", "notice:ann:" + noticeId)),
+  );
+
+  resumableError = false;
+  const second = await create().push();
+  expect(second).toMatchObject({ alreadyClaimed: 3, receipts: [
+    { state: "confirmed", botId: 20001, groupId: 10002, messageId: -10002 },
+  ] });
+  expect(attempts).toHaveLength(5);
+
+  const { commands } = createNoticePlugin(() => redis, host);
+  expect(await commands["#推送公告"]!("", { isMaster: false })).toContain("仅机器人主人");
+  expect(await commands["#公告推送回执"]!(noticeId, { isMaster: false })).toContain("仅机器人主人");
+  const receipts = await commands["#公告推送回执"]!(noticeId, { isMaster: true });
+  expect(receipts).toContain("群 10002 · 机器人 20001 · 确认送达 · 消息 -10002");
+  expect(receipts).toContain("群 10003 · 机器人 20001 · 发出结果未确认");
+});
+
+test.skipIf(!available)("投递回执写入失败后停止，下一轮跳过无法确认的目标", async () => {
+  const client = redis!;
+  const noticeId = (await createNoticeStore(client).publish("模拟断开", "20001"))!;
+  const attempts: number[] = [];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001],
+    listGroups: async () => [{ id: 10001 }, { id: 10002 }],
+    async sendGroup(_botId, groupId) {
+      attempts.push(groupId);
+      return groupId + 100;
+    },
+    async deleteMessage() {},
+  };
+  const fault: NoticeRedis = {
+    ...client,
+    async eval(script, options) {
+      if (options.keys.length === 2 && options.keys[0] === `notice:delivery:${noticeId}`) {
+        throw new Error("模拟写入失败");
+      }
+      return client.eval(script, options);
+    },
+  };
+  expect(await createNoticeDelivery(fault, host, async () => {}).push()).toMatchObject({
+    stopped: "storage-error", receipts: [],
+  });
+  expect(attempts).toEqual([10001]);
+  expect((await createNoticeDelivery(client, host).receipts())?.receipts).toEqual([
+    { state: "pending", botId: 20001, groupId: 10001 },
+  ]);
+  expect(await createNoticeDelivery(client, host, async () => {}).push()).toMatchObject({
+    alreadyClaimed: 1, receipts: [{ state: "confirmed", botId: 20001, groupId: 10002, messageId: 10102 }],
+  });
+  expect(attempts).toEqual([10001, 10002]);
+});
+
+test.skipIf(!available)("并发推送只发一次，公告改动和调用方中断会停止后续发送", async () => {
+  const client = redis!;
+  const store = createNoticeStore(client);
+  await store.publish("初版内容", "20001");
+  const sent: Array<{ groupId: number; content: string }> = [];
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const abort = new AbortController();
+  let mode: "hold" | "edit" | "abort" = "hold";
+  let list = [10001];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001],
+    listGroups: async () => list.map((id) => ({ id })),
+    async sendGroup(_botId, groupId, content) {
+      sent.push({ groupId, content });
+      if (mode === "hold") {
+        started.resolve();
+        await release.promise;
+      } else if (mode === "edit") {
+        await store.edit("新版内容");
+      } else {
+        abort.abort();
+      }
+      return groupId;
+    },
+    async deleteMessage() {},
+  };
+  const create = () => createNoticeDelivery(client, host, async () => {});
+  const first = create().push();
+  await started.promise;
+  try {
+    expect(await create().push()).toMatchObject({ alreadyClaimed: 1, receipts: [] });
+  } finally {
+    release.resolve();
+    await first;
+  }
+  expect(sent.map(({ groupId }) => groupId)).toEqual([10001]);
+  list = [10001, 10002, 10003];
+  mode = "edit";
+  expect(await create().push()).toMatchObject({ stopped: "notice-changed", receipts: [{ groupId: 10002 }] });
+  mode = "abort";
+  expect(await create().push(abort.signal)).toMatchObject({ stopped: "cancelled", receipts: [{ groupId: 10003 }] });
+  expect(sent[1]?.content).toContain("初版内容");
+  expect(sent[2]?.content).toContain("新版内容");
+  expect((await create().receipts())?.receipts.map(({ state }) => state)).toEqual([
+    "confirmed", "confirmed", "confirmed",
+  ]);
 });

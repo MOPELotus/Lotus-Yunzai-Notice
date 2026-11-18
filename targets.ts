@@ -11,7 +11,7 @@ interface Lists {
 
 export interface TargetSettings {
   readonly global: Lists;
-  readonly account?: Lists & { readonly enabled: boolean };
+  readonly account?: Lists & { readonly enabled: boolean; readonly pushInterval?: number };
 }
 
 const globalKeys = ["notice:whitelist", "notice:blacklist"];
@@ -52,8 +52,8 @@ function parseEnabled(value: unknown): boolean {
 const readLists = `
 local global = {redis.call('SMEMBERS', KEYS[1]), redis.call('SMEMBERS', KEYS[2])}
 if #KEYS == 2 then return global end
-local account = redis.call('HMGET', KEYS[3], 'whitelist', 'blacklist', 'enabled')
-return {global[1], global[2], account[1], account[2], account[3]}
+local account = redis.call('HMGET', KEYS[3], 'whitelist', 'blacklist', 'enabled', 'pushInterval')
+return {global[1], global[2], account[1], account[2], account[3], account[4]}
 `;
 
 const editGlobal = `
@@ -112,17 +112,19 @@ export function createTargetStore(redis: Redis) {
     async settings(account?: string): Promise<TargetSettings> {
       const keys = account === undefined ? globalKeys : [...globalKeys, accountKey(account)];
       const result = await redis.eval(readLists, { keys, arguments: [] });
-      if (!Array.isArray(result) || result.length !== (account === undefined ? 2 : 5)) {
+      if (!Array.isArray(result) || result.length !== (account === undefined ? 2 : 6)) {
         throw new Error("无法读取公告目标群配置");
       }
       const global = { whitelist: parseIds(result[0]), blacklist: parseIds(result[1]) };
       if (account === undefined) return { global };
+      const interval = Number(result[5]);
       return {
         global,
         account: {
           whitelist: parseAccountList(result[2]),
           blacklist: parseAccountList(result[3]),
           enabled: parseEnabled(result[4]),
+          pushInterval: Number.isInteger(interval) && interval >= 500 && interval <= 10_000 ? interval : undefined,
         },
       };
     },

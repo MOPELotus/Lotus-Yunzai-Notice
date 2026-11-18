@@ -1,3 +1,4 @@
+import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost } from "./delivery.ts";
 import { createTargetCommands } from "./target-commands.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
 
@@ -39,6 +40,7 @@ function contentError(content: string): string | undefined {
 
 export function createNoticePlugin(
   getRedis: () => NoticeRedis | undefined = () => (globalThis as { redis?: NoticeRedis }).redis,
+  deliveryHost?: NoticeDeliveryHost,
 ) {
   function withStore(handler: (store: Store) => Promise<string>): Promise<string> | string {
     const redis = getRedis();
@@ -80,7 +82,8 @@ export function createNoticePlugin(
     },
 
     "#公告帮助": (_argument: string, context: CommandContext) =>
-      context?.isMaster === true ? `${memberHelp}\n${ownerHelp}` : memberHelp,
+      context?.isMaster === true ? [memberHelp, ownerHelp, ...(deliveryHost
+        ? ["#推送公告", "#公告推送回执 [编号] [页码]"] : [])].join("\n") : memberHelp,
 
     "#发布公告": owner((content, context) => {
       const creator = context.user_id;
@@ -98,7 +101,77 @@ export function createNoticePlugin(
       await store.recall() ? "当前公告已撤回。" : "当前没有可撤回的公告。")),
   } satisfies Record<string, Handler>;
 
-  return { commands: Object.assign(createTargetCommands(getRedis), commands) };
+  const targetCommands = Object.assign(createTargetCommands(getRedis), commands);
+  if (!deliveryHost) return { commands: targetCommands };
+
+  let pushing = false;
+  return { commands: Object.assign(targetCommands, {
+    "#推送公告": owner(async (argument) => {
+      if (argument.trim()) return "用法：#推送公告";
+      if (pushing) return "正在推送公告，请稍候。";
+      const redis = getRedis();
+      if (!redis) return "公告存储未连接。";
+
+      pushing = true;
+      try {
+        const result = await createNoticeDelivery(redis, deliveryHost).push();
+        if (!result.noticeId) return "当前没有可推送的公告。";
+        const count = (state: DeliveryReceipt["state"]) =>
+          result.receipts.filter((receipt) => receipt.state === state).length;
+        const lines = [
+          `公告 ${result.noticeId} · ${result.selected} 个目标群`,
+          `确认送达 ${count("confirmed")} · 未发出 ${count("not-sent")} · 结果未确认 ${count("unknown")}`,
+        ];
+        if (result.alreadyClaimed) lines.push(`已跳过 ${result.alreadyClaimed} 个已有投递记录的群。`);
+        if (result.discoveryFailures) lines.push(`${result.discoveryFailures} 个机器人未能读取目标群。`);
+        if (result.stopped === "notice-changed") lines.push("公告发生变更，已停止后续发送。");
+        if (result.stopped === "storage-error") lines.push("投递记录写入未确认，已停止后续发送。");
+        if (result.stopped === "cancelled") lines.push("推送已中断。");
+        lines.push(`发送 #公告推送回执 ${result.noticeId} 查看逐群回执。`);
+        return lines.join("\n");
+      } catch {
+        return "公告推送未完成，请查看投递回执。";
+      } finally {
+        pushing = false;
+      }
+    }),
+    "#公告推送回执": owner(async (argument) => {
+      const [first, second, ...rest] = argument.trim() ? argument.trim().split(/\s+/u) : [];
+      const noticeId = first && /^\d{5}[A-Z]{3}$/u.test(first.toUpperCase()) ? first.toUpperCase() : undefined;
+      const page = Number((noticeId ? second : first) ?? 1);
+      if (rest.length || (!noticeId && second !== undefined) || !Number.isSafeInteger(page) || page < 1) {
+        return "用法：#公告推送回执 [编号] [页码]";
+      }
+      const redis = getRedis();
+      if (!redis) return "公告存储未连接。";
+
+      try {
+        const result = await createNoticeDelivery(redis, deliveryHost).receipts(noticeId);
+        if (!result?.receipts.length) return "没有公告推送回执。";
+        const receiptSize = 12;
+        const pages = Math.ceil(result.receipts.length / receiptSize);
+        if (page > pages) return `公告 ${result.noticeId} 的回执共有 ${pages} 页。`;
+        const lines = result.receipts.slice((page - 1) * receiptSize, page * receiptSize)
+          .map((receipt) => `群 ${receipt.groupId} · 机器人 ${receipt.botId} · ${describeReceipt(receipt)}`);
+        return [`公告 ${result.noticeId} 推送回执（${page}/${pages} 页）`, ...lines].join("\n");
+      } catch {
+        return "无法读取公告推送回执。";
+      }
+    }),
+  }) };
+}
+
+function describeReceipt(receipt: DeliveryReceipt): string {
+  switch (receipt.state) {
+    case "confirmed": return `确认送达 · 消息 ${receipt.messageId}`;
+    case "not-sent": return "确认未发出";
+    case "unknown": return "发出结果未确认";
+    case "pending": return "等待确认或进程中断";
+  }
+}
+
+export function createModule({ groups }: { groups: NoticeDeliveryHost }) {
+  return createNoticePlugin(undefined, groups);
 }
 
 export default createNoticePlugin();
