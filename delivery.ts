@@ -1,11 +1,12 @@
 import { setTimeout as wait } from "node:timers/promises";
+import { decorateNotice, type NoticeReply } from "./content.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
 
 export interface NoticeDeliveryHost {
   onlineBots(): readonly number[];
   listGroups(botId: number): Promise<readonly { id: number; name?: string }[]>;
-  sendGroup(botId: number, groupId: number, content: string): Promise<number>;
+  sendGroup(botId: number, groupId: number, content: NoticeReply): Promise<number>;
   deleteMessage(botId: number, messageId: number): Promise<void>;
 }
 
@@ -46,7 +47,8 @@ const id = (value: unknown): value is number =>
 const claimGroup = `
 local previous = redis.call('HGET', KEYS[1], ARGV[1])
 if previous and cjson.decode(previous).state ~= 'not-sent' then return 0 end
-if redis.call('GET', KEYS[2]) ~= ARGV[2] or redis.call('HGET', KEYS[3], 'content') ~= ARGV[3] then
+if redis.call('GET', KEYS[2]) ~= ARGV[2] or redis.call('HGET', KEYS[3], 'content') ~= ARGV[3] or
+  (redis.call('HGET', KEYS[3], 'segments') or '') ~= ARGV[5] then
   return -1
 end
 local status = redis.call('HGET', KEYS[3], 'status')
@@ -103,7 +105,7 @@ function readReceipt(group: string, raw: string): DeliveryReceipt {
 }
 
 async function send(host: NoticeDeliveryHost, notice: Notice, target: Destination): Promise<DeliveryReceipt> {
-  const content = `【公告通知】\n${notice.content}\n${notice.timestamp}`;
+  const content = decorateNotice(notice.content, notice.segments, "【公告通知】\n", `\n${notice.timestamp}`);
   try {
     const messageId = await host.sendGroup(target.botId, target.groupId, content);
     return Number.isSafeInteger(messageId)
@@ -182,7 +184,7 @@ export function createNoticeDelivery(
         try {
           const claim = await redis.eval(claimGroup, {
             keys: [receiptKey(notice.id), currentKey, noticeKey(notice.id)],
-            arguments: [String(groupId), notice.id, notice.content, pending],
+            arguments: [String(groupId), notice.id, notice.content, pending, notice.segmentSource ?? ""],
           });
           if (claim === -1) return { ...result, stopped: "notice-changed" };
           if (claim === 0) {

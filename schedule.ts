@@ -85,6 +85,7 @@ const claimDay = `
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 if ARGV[1] == '' or redis.call('GET', KEYS[2]) ~= ARGV[1] or
   redis.call('HGET', KEYS[3], 'content') ~= ARGV[2] or
+  (redis.call('HGET', KEYS[3], 'segments') or '') ~= ARGV[4] or
   redis.call('HGET', KEYS[3], 'status') ~= '当前' or
   redis.call('HGET', KEYS[3], 'push') ~= '未推送' then
   redis.call('SET', KEYS[1], '{"state":"skipped"}', 'EX', 3024000)
@@ -109,7 +110,7 @@ async function deliverScheduled(redis: NoticeRedis, host: NoticeDeliveryHost, da
   const started = JSON.stringify({ state: "started", noticeId });
   const claim = await redis.eval(claimDay, {
     keys: [key, "notice:current", `notice:ann:${noticeId}`],
-    arguments: [noticeId, notice?.content ?? "", started],
+    arguments: [noticeId, notice?.content ?? "", started, notice?.segmentSource ?? ""],
   });
   if (claim !== 1 || !notice) return;
 

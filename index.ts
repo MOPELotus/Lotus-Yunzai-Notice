@@ -1,3 +1,4 @@
+import { decorateNotice, parseNoticeInput, type InboundNoticeSegment, type NoticeReply } from "./content.ts";
 import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost } from "./delivery.ts";
 import { configuredNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
 import { createTargetCommands } from "./target-commands.ts";
@@ -6,13 +7,14 @@ import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
 interface CommandContext {
   readonly isMaster: boolean;
   readonly user_id?: number;
+  readonly message?: string | readonly InboundNoticeSegment[];
+  readonly raw_message?: string;
 }
 
-type Handler = (argument: string, context: CommandContext) => string | Promise<string>;
+type Handler = (argument: string, context: CommandContext) => NoticeReply | Promise<NoticeReply>;
 type Store = ReturnType<typeof createNoticeStore>;
 
 const pageSize = 5;
-const maxContent = 2_000;
 const memberHelp = [
   "#公告 查看当前公告",
   "#历史公告 [编号] 查看历史公告",
@@ -26,17 +28,12 @@ const ownerHelp = [
   "#公告账号白名单/黑名单 [机器人QQ] 添加/删除/查看",
 ].join("\n");
 
-function format(item: Notice, title: string): string {
-  return `【${title}】 ${item.id}\n${item.timestamp}\n${item.content}`;
+function format(item: Notice, title: string): NoticeReply {
+  return decorateNotice(item.content, item.segments, `【${title}】 ${item.id}\n${item.timestamp}\n`);
 }
 
 function owner(handler: Handler): Handler {
   return (argument, context) => context?.isMaster === true ? handler(argument, context) : "仅机器人主人可管理公告。";
-}
-
-function contentError(content: string): string | undefined {
-  if (!content.trim()) return "请输入公告内容。";
-  if ([...content].length > maxContent) return `公告内容最多 ${maxContent} 个字符。`;
 }
 
 function hostRedis() {
@@ -48,7 +45,7 @@ export function createNoticePlugin(
   deliveryHost?: NoticeDeliveryHost,
   signal?: AbortSignal,
 ) {
-  function withStore(handler: (store: Store) => Promise<string>): Promise<string> | string {
+  function withStore(handler: (store: Store) => Promise<NoticeReply>): Promise<NoticeReply> | string {
     const redis = getRedis();
     if (!redis) return "公告存储未连接。";
     return handler(createNoticeStore(redis)).catch(() => "公告存储操作失败，请稍后再试。");
@@ -80,7 +77,7 @@ export function createNoticePlugin(
           ...history.slice((page - 1) * pageSize, page * pageSize).map((item) => {
             const text = [...item.content];
             const preview = text.length > 160 ? `${text.slice(0, 160).join("")}…` : item.content;
-            return format({ ...item, content: preview }, "公告");
+            return `【公告】 ${item.id}\n${item.timestamp}\n${preview}`;
           }),
           "发送 #历史公告 <编号> 查看全文。",
         ].join("\n\n");
@@ -91,17 +88,23 @@ export function createNoticePlugin(
       context?.isMaster === true ? [memberHelp, ownerHelp, ...(deliveryHost
         ? ["#推送公告", "#公告推送回执 [编号] [页码]", "#撤回已发公告 [编号] [群号]"] : [])].join("\n") : memberHelp,
 
-    "#发布公告": owner((content, context) => {
+    "#发布公告": owner((argument, context) => {
       const creator = context.user_id;
       if (!creator || !Number.isSafeInteger(creator) || creator < 1) return "无法确认发布者身份。";
-      return contentError(content) ?? withStore(async (store) => {
-        const id = await store.publish(content, String(creator));
+      const parsed = parseNoticeInput("#发布公告", argument, context.message);
+      if ("error" in parsed) return parsed.error;
+      return withStore(async (store) => {
+        const id = await store.publish(parsed.content, String(creator));
         return id ? `公告已发布，编号 ${id}。发送 #公告 查看。` : "公告发布失败。";
       });
     }),
 
-    "#编辑公告": owner((content) => contentError(content) ?? withStore(async (store) =>
-      await store.edit(content) ? "公告已更新。" : "当前没有可编辑的公告。")),
+    "#编辑公告": owner((argument, context) => {
+      const parsed = parseNoticeInput("#编辑公告", argument, context.message);
+      if ("error" in parsed) return parsed.error;
+      return withStore(async (store) =>
+        await store.edit(parsed.content) ? "公告已更新。" : "当前没有可编辑的公告。");
+    }),
 
     "#撤回公告": owner(() => withStore(async (store) =>
       await store.recall() ? "当前公告已撤回。" : "当前没有可撤回的公告。")),

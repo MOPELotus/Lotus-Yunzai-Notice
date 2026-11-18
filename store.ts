@@ -1,3 +1,5 @@
+import { decodeNoticeSegments, encodeNoticeContent, type NoticeReply, type NoticeSegment } from "./content.ts";
+
 const currentKey = "notice:current";
 const historyKey = "notice:history";
 const announcementPrefix = "notice:ann:";
@@ -14,13 +16,18 @@ export interface Notice {
   readonly id: string;
   readonly content: string;
   readonly timestamp: string;
+  readonly segments?: readonly NoticeSegment[];
+  readonly segmentSource?: string;
 }
 
 function activeNotice(id: string, entry: Record<string, string>): Notice | undefined {
   if (!entry.content?.trim() || !entry.timestamp || !entry.creator ||
       ["已撤回", "recalled"].includes(entry.status ?? "")) return;
 
-  return { id, content: entry.content, timestamp: entry.timestamp };
+  const notice = { id, content: entry.content, timestamp: entry.timestamp };
+  if (!entry.segments) return notice;
+  const segments = decodeNoticeSegments(entry.segments, entry.content);
+  return { ...notice, segmentSource: entry.segments, ...(segments ? { segments } : {}) };
 }
 
 // All mutations are serialized by Valkey. Check key types before issuing the
@@ -31,7 +38,7 @@ local function expect_type(key, kind)
   return actual == 'none' or actual == kind
 end
 
-local op, prefix, new_id, content, creator, timestamp, now = unpack(ARGV)
+local op, prefix, new_id, content, creator, timestamp, now, segments = unpack(ARGV)
 if not expect_type(KEYS[1], 'string') or not expect_type(KEYS[2], 'list') then
   return redis.error_reply('notice keys have an unexpected type')
 end
@@ -65,6 +72,7 @@ if op == 'publish' then
   if alive then archive('已归档') end
   redis.call('HSET', target, 'content', content, 'creator', creator,
     'timestamp', timestamp, 'status', '当前', 'push', '未推送', 'created', now)
+  if segments ~= '' then redis.call('HSET', target, 'segments', segments) end
   redis.call('EXPIRE', target, 2592000)
   redis.call('SET', KEYS[1], new_id)
   return new_id
@@ -73,6 +81,8 @@ end
 if not alive then return false end
 if op == 'edit' then
   redis.call('HSET', old, 'content', content)
+  if segments == '' then redis.call('HDEL', old, 'segments')
+  else redis.call('HSET', old, 'segments', segments) end
 elseif op == 'recall' then
   archive('已撤回')
   redis.call('DEL', KEYS[1])
@@ -84,16 +94,17 @@ export function createNoticeStore(redis: NoticeRedis) {
   async function mutate(
     op: "publish" | "edit" | "recall",
     id = "",
-    content = "",
+    content: NoticeReply = "",
     creator = "",
     time = new Date(),
   ) {
     const iso = new Intl.DateTimeFormat("sv-SE", {
       timeZone: "Asia/Shanghai", dateStyle: "short", timeStyle: "medium",
     }).format(time);
+    const { text, segments } = encodeNoticeContent(content);
     const result = await redis.eval(mutateScript, {
       keys: [currentKey, historyKey],
-      arguments: [op, announcementPrefix, id, content, creator, iso, String(time.getTime())],
+      arguments: [op, announcementPrefix, id, text, creator, iso, String(time.getTime()), segments],
     });
     return typeof result === "string" ? result : undefined;
   }
@@ -117,7 +128,7 @@ export function createNoticeStore(redis: NoticeRedis) {
       });
     },
 
-    async publish(content: string, creator: string) {
+    async publish(content: NoticeReply, creator: string) {
       for (let attempt = 0; attempt < 5; attempt++) {
         const bytes = crypto.getRandomValues(new Uint32Array(4));
         const id = String(10_000 + bytes[0]! % 90_000) +
@@ -128,7 +139,7 @@ export function createNoticeStore(redis: NoticeRedis) {
       throw new Error("无法分配公告编号");
     },
 
-    edit: (content: string) => mutate("edit", "", content),
+    edit: (content: NoticeReply) => mutate("edit", "", content),
     recall: () => mutate("recall"),
   };
 }

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { NoticeReply } from "./content.ts";
 import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
 import { createNoticeDelivery, type NoticeDeliveryHost } from "./delivery.ts";
@@ -83,9 +84,9 @@ test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和�
     commands["#发布公告"]("初次发布", owner),
     commands["#发布公告"]("并行发布", owner),
   ]);
-  expect(replies.every((reply) => /公告已发布，编号 \d{5}[A-Z]{3}/u.test(reply))).toBe(true);
+  expect(replies.every((reply) => typeof reply === "string" && /公告已发布，编号 \d{5}[A-Z]{3}/u.test(reply))).toBe(true);
   const currentId = await exec("GET", "notice:current") as string;
-  expect(replies.some((reply) => reply.includes(currentId))).toBe(true);
+  expect(replies.some((reply) => typeof reply === "string" && reply.includes(currentId))).toBe(true);
   expect(await exec("HGET", `notice:ann:${oldId}`, "status")).toBe("已归档");
   expect(await commands["#历史公告"](oldId)).toContain(content);
   expect(await commands["#全部历史公告"]("1")).toContain(oldId);
@@ -238,7 +239,7 @@ test.skipIf(!available)("并发推送只发一次，公告改动和调用方中�
   const client = redis!;
   const store = createNoticeStore(client);
   await store.publish("初版内容", "20001");
-  const sent: Array<{ groupId: number; content: string }> = [];
+  const sent: Array<{ groupId: number; content: NoticeReply }> = [];
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const abort = new AbortController();
@@ -601,5 +602,145 @@ test.skipIf(!available)("关闭时等待在途确认，重启跳过状态已开�
   } finally {
     gateway.resolve(70001);
     await Promise.all([dispose(), restart()]);
+  }
+});
+
+test.skipIf(!available)("发布、读取、推送和编辑按顺序保留公告文字与图片", async () => {
+  const client = redis!;
+  const { commands } = createNoticePlugin(() => client);
+  const catalog = createNoticeStore(client);
+  const owner = { isMaster: true, user_id: 20001 };
+  const prefix = "首行\n[CQ:at,qq=all] & <公告> 😀\n";
+  const caption = "\n尾行，[字样]";
+  const https = "https://images.example.invalid/notice.png?x=1&y=2";
+  const inline = "base64://AQI=";
+  const body = [
+    { type: "text", text: prefix },
+    { type: "image", file: https },
+    { type: "text", text: caption },
+  ] as const;
+  const mixed = {
+    ...owner,
+    message: [
+      { type: "reply", id: 7 },
+      { type: "at", qq: "20001" },
+      { type: "text", text: "#发布" },
+      { type: "text", text: "公告 " + prefix },
+      { type: "image", url: https, file: "gateway-temporary-file" },
+      { type: "text", text: caption },
+    ],
+  };
+
+  expect(await commands["#发布公告"]("", { ...mixed, isMaster: false })).toContain("仅机器人主人");
+  expect(await commands["#发布公告"](prefix + caption, mixed)).toContain("公告已发布");
+  const current = (await catalog.current())!;
+  expect(current.content).toBe(prefix + "[图片]" + caption);
+  expect(await exec("HGET", "notice:ann:" + current.id, "content")).toBe(current.content);
+  expect(JSON.parse(await exec("HGET", "notice:ann:" + current.id, "segments") as string)).toEqual([...body]);
+  expect(await commands["#公告"]()).toEqual([
+    { type: "text", text: `【当前公告】 ${current.id}\n${current.timestamp}\n` }, ...body,
+  ]);
+
+  const sent: NoticeReply[] = [];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001],
+    listGroups: async () => [{ id: 10001 }],
+    async sendGroup(_bot, _group, value) { sent.push(value); return 70001; },
+    async deleteMessage() {},
+  };
+  expect(await createNoticeDelivery(client, host).push()).toMatchObject({
+    receipts: [{ state: "confirmed", messageId: 70001 }],
+  });
+  expect(sent[0]).toEqual([
+    { type: "text", text: "【公告通知】\n" }, ...body, { type: "text", text: "\n" + current.timestamp },
+  ]);
+
+  expect(await commands["#编辑公告"]("", {
+    ...owner,
+    message: [{ type: "text", text: "#编辑公告" }, { type: "image", file: inline }],
+  })).toBe("公告已更新。");
+  expect(await commands["#公告"]()).toEqual([
+    { type: "text", text: `【当前公告】 ${current.id}\n${current.timestamp}\n` },
+    { type: "image", file: inline },
+  ]);
+  expect(await commands["#发布公告"]("已切换到普通文字", owner)).toContain("公告已发布");
+  expect(await commands["#历史公告"](current.id)).toEqual([
+    { type: "text", text: `【历史公告】 ${current.id}\n${current.timestamp}\n` },
+    { type: "image", file: inline },
+  ]);
+  expect(await commands["#全部历史公告"]("1")).toContain("[图片]");
+
+  const plain = (await catalog.current())!;
+  expect(await commands["#编辑公告"]("等号 = 逗号 , & []\n尾行", owner)).toBe("公告已更新。");
+  expect(await exec("HGET", "notice:ann:" + plain.id, "segments")).toBeNull();
+  expect(await commands["#公告"]()).toContain("等号 = 逗号 , & []\n尾行");
+});
+
+test.skipIf(!available)("不可重放的图片不会覆盖公告，旧文字和已损坏结构仍可按原文查看", async () => {
+  const client = redis!;
+  const current = await createNoticeStore(client).publish("旧文字 [CQ:image,file=legacy]", "20001");
+  const { commands } = createNoticePlugin(() => client);
+  const owner = { isMaster: true, user_id: 20001 };
+
+  for (const file of ["file:///home/user/private.png", "http://images.example.invalid/a.png",
+    "https://name:token@images.example.invalid/a.png", "base64://bad padding="]) {
+    expect(await commands["#编辑公告"]("", {
+      ...owner, message: [{ type: "text", text: "#编辑公告" }, { type: "image", file }],
+    })).toContain("需要 HTTPS");
+  }
+  expect(await commands["#编辑公告"]("说明", {
+    ...owner,
+    message: [{ type: "text", text: "#编辑公告 说明" }, { type: "at", qq: "all" }],
+  })).toContain("只支持文字和图片");
+
+  await exec("HSET", "notice:ann:" + current, "segments", '[{"type":"image","file":"https://images.example.invalid/stale.png"}]');
+  expect(await commands["#公告"]()).toContain("旧文字 [CQ:image,file=legacy]");
+  expect(await commands["#编辑公告"]("清理旧结构", owner)).toBe("公告已更新。");
+  expect(await exec("HGET", "notice:ann:" + current, "segments")).toBeNull();
+});
+
+test.skipIf(!available)("图片替换不改变文字预览时，定时器和投递队列仍不会发送旧图片", async () => {
+  const client = redis!;
+  const store = createNoticeStore(client);
+  const original = "https://images.example.invalid/old.png";
+  const replacement = "https://images.example.invalid/new.png";
+  const id = (await store.publish([{ type: "image", file: original }], "20001"))!;
+  const scheduled = fakeScheduleClock("2026-11-19T07:59:00+08:00");
+  const window = parseNoticeSchedule("scheduleTime: '8:00-8:00'")!;
+  const sent: NoticeReply[] = [];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001],
+    listGroups: async () => [{ id: 10001 }, { id: 10002 }],
+    async sendGroup(_bot, _group, value) {
+      sent.push(value);
+      await store.edit([{ type: "image", file: original }]);
+      return 70001;
+    },
+    async deleteMessage() {},
+  };
+  let swapped = false;
+  const fault: NoticeRedis = {
+    ...client,
+    async eval(script, options) {
+      if (!swapped && options.keys[0] === "notice:schedule:2026-11-19") {
+        expect(await store.edit([{ type: "image", file: replacement }])).toBe(id);
+        swapped = true;
+      }
+      return client.eval(script, options);
+    },
+  };
+  const dispose = startNoticeScheduler(() => fault, host, window, undefined, scheduled);
+  try {
+    scheduled.advance("2026-11-19T08:00:00+08:00");
+    await waitFor(async () => expect(await exec("GET", "notice:schedule:2026-11-19")).toBe('{"state":"skipped"}'));
+    expect(sent).toEqual([]);
+
+    const result = await createNoticeDelivery(client, host, async () => {}).push();
+    expect(result).toMatchObject({ stopped: "notice-changed", receipts: [{ groupId: 10001 }] });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContainEqual({ type: "image", file: replacement });
+    expect((await store.current())?.content).toBe("[图片]");
+  } finally {
+    await dispose();
   }
 });
