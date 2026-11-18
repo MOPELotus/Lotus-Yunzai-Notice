@@ -1,3 +1,4 @@
+import { createTargetCommands } from "./target-commands.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
 
 interface CommandContext {
@@ -19,6 +20,8 @@ const ownerHelp = [
   "#发布公告 <内容>",
   "#编辑公告 <内容>",
   "#撤回公告",
+  "#公告全局白名单/黑名单 添加/删除/查看",
+  "#公告账号白名单/黑名单 [机器人QQ] 添加/删除/查看",
 ].join("\n");
 
 function format(item: Notice, title: string): string {
@@ -95,7 +98,7 @@ export function createNoticePlugin(
       await store.recall() ? "当前公告已撤回。" : "当前没有可撤回的公告。")),
   } satisfies Record<string, Handler>;
 
-  return { commands };
+  return { commands: Object.assign(createTargetCommands(getRedis), commands) };
 }
 
 export default createNoticePlugin();

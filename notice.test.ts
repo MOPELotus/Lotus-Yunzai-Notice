@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNoticePlugin } from "./index.ts";
 import type { NoticeRedis } from "./store.ts";
+import { createTargetStore, selectNoticeGroups } from "./targets.ts";
 
 const serverPath = Bun.which("valkey-server");
 const cliPath = Bun.which("valkey-cli");
@@ -90,4 +91,51 @@ test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和�
   expect(await commands["#公告"]()).toBe("当前没有公告。");
   expect(await commands["#历史公告"](currentId)).toBe("没有找到对应的历史公告。");
   expect(await commands["#全部历史公告"]("1")).not.toContain(currentId);
+});
+
+test.skipIf(!available)("沿用旧全局名单和账号配置，筛选真实群列表且并发编辑不丢项", async () => {
+  const { commands } = createNoticePlugin(() => redis);
+  const store = createTargetStore(redis!);
+  const account = "20001";
+  const accountKey = "notice:account:" + account + ":config";
+  const owner = { isMaster: true, message_type: "group" as const, group_id: 10004, self_id: 20001 };
+  const admin = { ...owner, isMaster: false };
+
+  await exec("SADD", "notice:whitelist", "10001", "10002", "10003");
+  await exec("SADD", "notice:blacklist", "10002");
+  await exec("HSET", accountKey, "whitelist", '["10001","10002",10003]',
+    "blacklist", '["10003"]', "enabled", "1", "pushInterval", "2500");
+  await exec("SADD", "notice:account:" + account + ":groups", "10001", "10006");
+
+  const original = await store.settings(account);
+  expect(selectNoticeGroups(original, ["10002", "10001", "10001", "10003", "10004"])).toEqual(["10001"]);
+  expect(selectNoticeGroups(original, ["10006"])).toEqual([]);
+  expect(selectNoticeGroups({
+    ...original,
+    account: { enabled: true, whitelist: ["10001", "10004"], blacklist: [] },
+  }, ["10001", "10003", 10004])).toEqual(["10001"]);
+  expect(await exec("HGET", accountKey, "whitelist")).toBe('["10001","10002",10003]');
+  expect(selectNoticeGroups(await store.settings("20002"), ["10001", "10006"])).toEqual(["10001"]);
+  await exec("HSET", "notice:account:20002:config", "enabled", "false");
+  expect(selectNoticeGroups(await store.settings("20002"), ["10001"])).toEqual([]);
+
+  expect(await commands["#公告全局白名单添加"]!("10008", admin)).toContain("仅机器人主人");
+  expect(await commands["#公告全局白名单"]!("删除 ALL", owner)).toContain("明确填写目标群号");
+  expect(await commands["#公告全局白名单添加"]!("", owner)).toContain("已添加 1 个群");
+  expect(await commands["#公告全局白名单查看"]!("", owner)).toContain("共 4 个群");
+  expect(await commands["#公告全局白名单"]!("删除 10004", owner)).toContain("已删除 1 个群");
+
+  const edits = await Promise.all([
+    commands["#公告账号白名单"]!("20001 添加 10005", owner),
+    commands["#公告账号白名单添加"]!("10006，10005", owner),
+  ]);
+  expect(edits.every((reply) => reply.includes("账号白名单已添加"))).toBe(true);
+  expect([...(await store.settings(account)).account!.whitelist].sort()).toEqual(["10001", "10002", "10003", "10005", "10006"]);
+  expect(await exec("HGET", accountKey, "pushInterval")).toBe("2500");
+  expect(await commands["#公告账号白名单"]!("20001 删除 10001", owner)).toContain("已删除 1 个群");
+
+  await exec("HSET", accountKey, "whitelist", '{"unexpected":true}');
+  await expect(store.settings(account)).rejects.toThrow("名单格式无效");
+  expect(await commands["#公告账号白名单添加"]!("10007", owner)).toContain("名单格式");
+  expect(await exec("HGET", accountKey, "whitelist")).toBe('{"unexpected":true}');
 });
