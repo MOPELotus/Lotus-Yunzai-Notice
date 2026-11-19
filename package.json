@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "exports": "./index.ts",
+  "dependencies": { "node-schedule": "2.1.2" },
   "lotusYunzai": {
     "entry": "./index.ts"
   }

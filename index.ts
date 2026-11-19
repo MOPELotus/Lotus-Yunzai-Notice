@@ -1,5 +1,7 @@
 import { decorateNotice, parseNoticeInput, type InboundNoticeSegment, type NoticeReply } from "./content.ts";
 import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost } from "./delivery.ts";
+import { configuredAnnouncements } from "./mys-announcement-config.ts";
+import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { configuredNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
 import { createTargetCommands } from "./target-commands.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
@@ -218,13 +220,23 @@ function describeReceipt(receipt: DeliveryReceipt): string {
 export function createModule({ groups, signal }: { groups: NoticeDeliveryHost; signal?: AbortSignal }):
   ReturnType<typeof createNoticePlugin> & { dispose?: () => Promise<void> } {
   const module = createNoticePlugin(hostRedis, groups, signal);
+  const disposers: (() => Promise<void>)[] = [];
   try {
     const window = configuredNoticeSchedule();
-    if (window) return { ...module, dispose: startNoticeScheduler(hostRedis, groups, window, signal) };
+    if (window) disposers.push(startNoticeScheduler(hostRedis, groups, window, signal));
   } catch {
     console.warn("[notice] 无法读取公告定时配置，定时推送未启动。");
   }
-  return module;
+  try {
+    const config = configuredAnnouncements(new URL("../../", import.meta.url));
+    const official = createOfficialAnnouncements(hostRedis, groups, config, signal);
+    Object.assign(module.commands, official.commands);
+    disposers.push(official.dispose);
+  } catch {
+    console.warn("[notice] 无法读取米游社公告推送配置。");
+  }
+  if (!disposers.length) return module;
+  return { ...module, async dispose() { await Promise.all(disposers.map((dispose) => dispose())); } };
 }
 
 export default createNoticePlugin();

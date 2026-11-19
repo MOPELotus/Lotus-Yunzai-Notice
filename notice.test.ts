@@ -5,6 +5,9 @@ import { join } from "node:path";
 import type { NoticeReply } from "./content.ts";
 import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
+import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
+import { createAnnouncementSource, type AnnouncementGame } from "./mys-announcement-source.ts";
+import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { createNoticeDelivery, type NoticeDeliveryHost } from "./delivery.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
 import { parseNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
@@ -743,4 +746,146 @@ test.skipIf(!available)("图片替换不改变文字预览时，定时器和投�
   } finally {
     await dispose();
   }
+});
+
+test("米游社官方列表只接受可用的旧公告字段，保留摘要和官方图片", async () => {
+  const queries: URL[] = [];
+  const source = createAnnouncementSource((async (input: URL, options: RequestInit) => {
+    queries.push(input);
+    expect(new Headers(options.headers).has("Cookie")).toBe(false);
+    return Response.json({ retcode: 0, data: { list: [
+      { post: { post_id: "12", created_at: 100, subject: "  三行\n公告  ", summary: "官方摘要",
+        cover: "https://upload-bbs.miyoushe.com/example.png", uid: "0" } },
+      { post: { post_id: "11", created_at: 99, subject: "旧公告", cover: "https://invalid.test/1.png" },
+        image_list: [{ url: "https://upload-bbs.miyoushe.com/fallback.png" }] },
+      { post: { post_id: "13", created_at: 101, subject: "已删内容", is_deleted: 1 } },
+      { post: { post_id: "13/evil", created_at: 101, subject: "无效链接" } },
+    ] } });
+  }) as typeof fetch);
+  expect(await source("zzz", new AbortController().signal)).toEqual([
+    { id: "11", created: 99, title: "旧公告", image: "https://upload-bbs.miyoushe.com/fallback.png" },
+    { id: "12", created: 100, title: "三行 公告", summary: "官方摘要", image: "https://upload-bbs.miyoushe.com/example.png" },
+  ]);
+  expect(queries[0]?.searchParams.get("gids")).toBe("8");
+  expect(queries[0]?.searchParams.get("type")).toBe("1");
+});
+
+test.skipIf(!available)("旧米游社公告群和 Redis 去重键重跑不重复，分开处理确认、未发出与结果未知", async () => {
+  const wall = 1_800_000_000;
+  const config = parseAnnouncementConfig(`
+pushTime: '0 0/5 * * * ?'
+maxNum: 1
+banWord: { gs: '测试过滤' }
+gsannounceGroup:
+  '70': [90, '90', 94]
+  '71': [90, 91, 92, 93]
+`);
+  await exec("SET", "Yz:gs:mys:newPush:71:90:1000", "1", "EX", "36000");
+  const sends: { bot: number; group: number; body: NoticeReply }[] = [];
+  let reject = true;
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [70, 71],
+    async listGroups(bot) { return (bot === 70 ? [90, 94] : [90, 91, 92]).map((id) => ({ id })); },
+    async sendGroup(bot, group, body) {
+      sends.push({ bot, group, body });
+      if (group === 91 && reject) throw Object.assign(new Error(), { delivery: "not-sent" });
+      if (group === 92) throw new Error("回执断开");
+      return -123;
+    },
+    async deleteMessage() {},
+  };
+  const feed = async () => [
+    { id: "999", created: wall - 7201, title: "过时公告" },
+    { id: "1000", created: wall - 4, title: "新公告", summary: "摘要", image: "https://upload-bbs.miyoushe.com/preview.png" },
+    { id: "1001", created: wall - 3, title: "测试过滤" },
+  ];
+  const service = () => createOfficialAnnouncements(() => redis, host, config, undefined, feed, () => wall * 1000);
+  const first = service();
+  try {
+    expect(await first.run(["gs"])).toMatchObject({ confirmed: 1, rejected: 1, unknown: 1, skipped: 1 });
+    expect(sends.map(({ bot, group }) => [bot, group])).toEqual([[70, 94], [71, 91], [71, 92]]);
+    expect(sends[0]?.body).toEqual([
+      { type: "text", text: "【原神公告】新公告\n摘要\nhttps://www.miyoushe.com/ys/article/1000" },
+      { type: "image", file: "https://upload-bbs.miyoushe.com/preview.png" },
+    ]);
+    expect(await exec("GET", "Yz:gs:mys:newPush:70:94:1000")).toBe("1");
+    expect(await exec("GET", "Yz:gs:mys:newPush:71:92:1000")).toBe("1");
+    expect(await exec("GET", "Yz:gs:mys:newPush:71:91:1000")).toBeNull();
+  } finally {
+    await first.dispose();
+  }
+  reject = false;
+  sends.length = 0;
+  const second = service();
+  try {
+    expect(await second.run(["gs"])).toMatchObject({ confirmed: 1, rejected: 0, unknown: 0, skipped: 3 });
+    expect(sends.map(({ group }) => group)).toEqual([91]);
+  } finally {
+    await second.dispose();
+  }
+});
+
+test.skipIf(!available)("米游社订阅命令持久覆盖旧名单，停止后取消正在读取的公告", async () => {
+  const config = parseAnnouncementConfig("gsannounceGroup: { '70': [90] }");
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [70],
+    async listGroups() { return [{ id: 90 }]; },
+    async sendGroup() { throw new Error("该夹具不应发群消息"); },
+    async deleteMessage() {},
+  };
+  const entered = Promise.withResolvers<void>();
+  let polls = 0;
+  const feed = async (_game: AnnouncementGame, signal: AbortSignal) => {
+    polls++;
+    entered.resolve();
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return [];
+  };
+  const service = createOfficialAnnouncements(() => redis, host, config, undefined, feed);
+  const context = { isMaster: false, message_type: "group", self_id: 70, group_id: 90 };
+  const admin = { ...context, member: { is_admin: true, is_owner: false } };
+  try {
+    expect(await service.commands["#关闭公告推送"]!("", context)).toContain("管理员");
+    expect(await service.commands["#关闭公告推送"]!("", admin)).toBe("原神公告推送已关闭。");
+    expect(await service.run(["gs"])).toMatchObject({ confirmed: 0 });
+    expect(polls).toBe(0);
+    expect(await service.commands["#原神开启公告推送"]!("", admin)).toBe("原神公告推送已开启。");
+    const pending = service.run(["gs"]);
+    await entered.promise;
+    await service.dispose();
+    expect(await pending).toMatchObject({ confirmed: 0 });
+    expect(service.run(["gs"])).toBeUndefined();
+  } finally {
+    await service.dispose();
+  }
+});
+
+test.skipIf(!available)("旧 cron 实际触发米游社订阅，只从当前在线账号向订阅群发送", async () => {
+  const wall = 1_800_000_000;
+  const config = parseAnnouncementConfig("pushTime: '*/1 * * * * *'\nzzzannounceGroup: { '80': [90] }");
+  const sent = Promise.withResolvers<NoticeReply>();
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [80],
+    async listGroups() { return [{ id: 90 }, { id: 91 }]; },
+    async sendGroup(bot, group, body) {
+      expect([bot, group]).toEqual([80, 90]);
+      expect(await exec("GET", "Yz:zzz:mys:newPush:80:90:1010")).not.toBeNull();
+      sent.resolve(body);
+      return -70;
+    },
+    async deleteMessage() {},
+  };
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const service = createOfficialAnnouncements(() => redis, host, config, undefined, async (game) => {
+    expect(game).toBe("zzz");
+    return [{ id: "1010", created: wall - 3, title: "自动投递" }];
+  }, () => wall * 1000);
+  try {
+    timeout = setTimeout(() => sent.reject(new Error("米游社旧 cron 未触发。")), 2500);
+    expect(await sent.promise).toBe("【绝区零公告】自动投递\nhttps://www.miyoushe.com/zzz/article/1010");
+  } finally {
+    clearTimeout(timeout);
+    await service.dispose();
+  }
+  expect(await exec("GET", "Yz:zzz:mys:newPush:80:90:1010")).toBe("1");
 });
