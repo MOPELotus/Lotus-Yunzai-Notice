@@ -29,6 +29,13 @@ const ownerHelp = [
   "#公告全局白名单/黑名单 添加/删除/查看",
   "#公告账号白名单/黑名单 [机器人QQ] 添加/删除/查看",
 ].join("\n");
+const ownerDeliveryHelp = [
+  "#推送公告",
+  "#公告推送回执 [编号] [页码]",
+  "#撤回已发公告 [编号] [群号]",
+  "#公告账号列表/状态/统计/启用/禁用",
+  "#公告账号配置 [机器人QQ 启用/禁用/间隔/重试 值]",
+].join("\n");
 
 function format(item: Notice, title: string): NoticeReply {
   return decorateNotice(item.content, item.segments, `【${title}】 ${item.id}\n${item.timestamp}\n`);
@@ -87,8 +94,7 @@ export function createNoticePlugin(
     },
 
     "#公告帮助": (_argument: string, context: CommandContext) =>
-      context?.isMaster === true ? [memberHelp, ownerHelp, ...(deliveryHost
-        ? ["#推送公告", "#公告推送回执 [编号] [页码]", "#撤回已发公告 [编号] [群号]"] : [])].join("\n") : memberHelp,
+      context?.isMaster === true ? [memberHelp, ownerHelp, ...(deliveryHost ? [ownerDeliveryHelp] : [])].join("\n") : memberHelp,
 
     "#发布公告": owner((argument, context) => {
       const creator = context.user_id;
@@ -112,7 +118,7 @@ export function createNoticePlugin(
       await store.recall() ? "当前公告已撤回。" : "当前没有可撤回的公告。")),
   } satisfies Record<string, Handler>;
 
-  const targetCommands = Object.assign(createTargetCommands(getRedis), commands);
+  const targetCommands = Object.assign(createTargetCommands(getRedis, deliveryHost), commands);
   if (!deliveryHost) return { commands: targetCommands };
 
   let pushing = false;

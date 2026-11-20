@@ -1,5 +1,6 @@
 import type { NoticeRedis } from "./store.ts";
-import { createTargetStore, validTargetId, type GroupList } from "./targets.ts";
+import { noticeAccounts, type NoticeDeliveryHost } from "./delivery.ts";
+import { createTargetStore, selectNoticeGroups, validTargetId, type GroupList } from "./targets.ts";
 
 interface Context {
   readonly isMaster: boolean;
@@ -16,8 +17,9 @@ function contextId(value: number | undefined): string | undefined {
   return value && Number.isSafeInteger(value) && value > 0 ? String(value) : undefined;
 }
 
-export function createTargetCommands(getRedis: () => NoticeRedis | undefined): Record<string, Handler> {
+export function createTargetCommands(getRedis: () => NoticeRedis | undefined, host?: NoticeDeliveryHost): Record<string, Handler> {
   const commands: Record<string, Handler> = {};
+  const online = () => host ? [...noticeAccounts(host)].sort((a, b) => a.botId - b.botId) : [];
 
   for (const [kind, label] of [["whitelist", "白名单"], ["blacklist", "黑名单"]] as const) {
     for (const scope of ["全局", "账号"] as const) {
@@ -29,7 +31,79 @@ export function createTargetCommands(getRedis: () => NoticeRedis | undefined): R
       }
     }
   }
+  if (host) for (const action of ["列表", "状态", "启用", "禁用", "配置", "统计"] as const) {
+    commands[`#公告账号${action}`] = (argument, context) => manageAccounts(action, argument, context);
+  }
   return commands;
+
+  async function manageAccounts(action: "列表" | "状态" | "启用" | "禁用" | "配置" | "统计", argument: string, context: Context) {
+    if (context?.isMaster !== true) return "仅机器人主人可管理公告账号。";
+    const redis = getRedis();
+    if (!redis) return "公告存储未连接。";
+    const accounts = online();
+    const ids = accounts.map(({ botId }) => String(botId));
+    const input = argument.trim();
+    if (input && action !== "配置") return `用法 #公告账号${action}`;
+    if (!ids.length) return "当前没有登录的公告账号。";
+    const store = createTargetStore(redis);
+
+    try {
+      if (action === "启用" || action === "禁用") {
+        const changed = await store.setAccounts(ids, "enabled", action === "启用");
+        return `已${action} ${changed}/${ids.length} 个在线账号的公告推送。`;
+      }
+      if (action === "配置" && input) {
+        const [account, setting, raw, ...extra] = input.split(/\s+/u);
+        if (!account || !ids.includes(account)) return "指定的公告账号未连接。";
+        if (!setting || !raw || extra.length) return "用法 #公告账号配置 QQ 启用/禁用/间隔/重试 值";
+        if (setting === "启用" || setting === "禁用") {
+          const choice = /^(true|是|启用)$/iu.test(raw);
+          if (!choice && !/^(false|否|禁用)$/iu.test(raw)) return "请填写 true/false 或 是/否。";
+          await store.setAccounts([account], "enabled", setting === "启用" ? choice : !choice);
+        } else if (setting === "间隔" || setting === "重试") {
+          const value = /^\d+$/u.test(raw) ? Number(raw) : NaN;
+          const [low, high] = setting === "间隔" ? [500, 10_000] : [0, 10];
+          if (!Number.isInteger(value) || value < low || value > high) {
+            return setting === "间隔" ? "推送间隔须为 500 至 10000 毫秒。" : "重试次数须为 0 至 10。";
+          }
+          await store.setAccounts([account], setting === "间隔" ? "pushInterval" : "retryCount", value);
+        } else return "配置项可选启用、禁用、间隔或重试。";
+        return `公告账号 ${account} 的配置已保存。`;
+      }
+
+      const global = (await store.settings()).global;
+      const rows: string[] = [];
+      let enabled = 0, memberships = 0, available = 0, failures = 0;
+      for (const account of accounts) {
+        const settings = await store.settings(String(account.botId));
+        const config = settings.account!;
+        if (config.enabled) enabled++;
+        const groups = action === "配置" ? undefined : await account.listGroups().catch(() => {
+          failures++;
+          return undefined;
+        });
+        if (groups) {
+          memberships += groups.length;
+          available += selectNoticeGroups(settings, groups.map(({ id }) => id)).length;
+        }
+        const fields = [String(account.botId), account.adapter === "milky" ? "Milky" : "OneBot", config.enabled ? "启用" : "禁用"];
+        if (action !== "配置") fields.push(groups ? `${groups.length} 个群` : "群列表不可用");
+        if (action === "列表" || action === "配置") fields.push(`间隔 ${config.pushInterval ?? 2000} 毫秒`);
+        if (action === "配置") fields.push(`重试 ${config.retryCount ?? 3}`);
+        if (action === "配置" || action === "状态") fields.push(`白名单 ${config.whitelist.length} · 黑名单 ${config.blacklist.length}`);
+        rows.push(fields.join(" · "));
+      }
+      const lines = [`公告账号${action} · ${ids.length} 个在线账号`];
+      if (action === "配置" || action === "状态") lines.push(`全局白名单 ${global.whitelist.length} · 全局黑名单 ${global.blacklist.length}`);
+      if (action === "统计") {
+        lines.push(`启用 ${enabled} · 群数 ${memberships} · 可推送 ${available}`);
+        if (failures) lines.push(`${failures} 个账号的群数未计入。`);
+      }
+      return [...lines, ...rows].join("\n");
+    } catch {
+      return "公告账号操作失败，请检查存储与账号配置。";
+    }
+  }
 
   async function manage(list: GroupList, scope: "全局" | "账号", argument: string, context: Context) {
     if (context?.isMaster !== true) return "仅机器人主人可管理公告目标群。";
@@ -61,7 +135,15 @@ export function createTargetCommands(getRedis: () => NoticeRedis | undefined): R
         return `${title}（${page}/${pages} 页，共 ${ids.length} 个群）\n${ids.slice((page - 1) * groupsPerPage, page * groupsPerPage).join("、")}`;
       }
 
-      if (words.some((word) => word.toUpperCase() === "ALL")) return "请明确填写目标群号。";
+      if (words.length === 1 && words[0]?.toUpperCase() === "ALL") {
+        if (!host || scope !== "全局") return "请明确填写目标群号。";
+        const groups = await Promise.all(online().map((bot) => bot.listGroups()));
+        const ids = [...new Set(groups.flatMap((entries) =>
+          entries.map(({ id }) => contextId(id)).filter((id): id is string => id !== undefined)))];
+        if (!ids.length) return "当前在线账号没有可核实的群。";
+        const affected = await store.change(list, action === "添加" ? "add" : "remove", ids);
+        return `${title}已${action} ${affected} 个在线账号所在的群。`;
+      }
       const ids = words.join(" ").split(/[\s,，、]+/u).filter(Boolean);
       if (!ids.length && context.message_type === "group") {
         const group = contextId(context.group_id);

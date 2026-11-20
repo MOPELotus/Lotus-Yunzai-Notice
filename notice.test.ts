@@ -101,6 +101,54 @@ test("公告自动推送读取旧目录的默认和覆盖配置，显式文件�
   }
 });
 
+test.skipIf(!available)("公告账号管理沿用旧哈希，只处理在线账号与可核实的 ALL 目标", async () => {
+  let missingGroups = false;
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001, 20002],
+    async listGroups(bot) {
+      if (bot === 20002 && missingGroups) throw new Error("offline");
+      return (bot === 20001 ? [7701, 7702] : [7702, 7703]).map(id => ({ id }));
+    },
+    async sendGroup() { throw new Error("management cannot send a notice"); },
+    async deleteMessage() { throw new Error("management cannot recall a notice"); },
+  };
+  const { commands } = createNoticePlugin(() => redis, host);
+  const command = (name: string, argument = "", isMaster = true) => commands[name]!(argument, { isMaster });
+  const one = "notice:account:20001:config", other = "notice:account:20002:config";
+  const offline = "notice:account:20003:config";
+  await exec("HSET", one, "enabled", "true", "pushInterval", "1500", "blacklist", '["7701"]', "lastPushTime", "123");
+  await exec("HSET", offline, "enabled", "false");
+  await exec("SADD", "notice:blacklist", "7799");
+  expect(await command("#公告账号列表")).toContain("20001 · OneBot · 启用 · 2 个群 · 间隔 1500 毫秒");
+  expect(await command("#公告账号统计")).toContain("启用 2 · 群数 4 · 可推送 3");
+  expect(await command("#公告账号禁用", "", false)).toContain("仅机器人主人");
+  expect(await command("#公告账号禁用")).toContain("已禁用 2/2");
+  expect(await command("#公告账号状态")).toContain("20001 · OneBot · 禁用");
+  expect(await command("#公告账号配置", "20002 启用 是")).toContain("已保存");
+  expect(await command("#公告账号配置", "20001 间隔 500")).toContain("已保存");
+  expect(await command("#公告账号配置", "20001 重试 0")).toContain("已保存");
+  expect(await command("#公告账号配置", "20002 间隔 499")).toContain("500 至 10000");
+  expect(await command("#公告账号配置", "20003 启用 是")).toContain("未连接");
+  expect(await command("#公告账号配置")).toContain("间隔 500 毫秒 · 重试 0");
+  expect(await exec("HGETALL", one)).toEqual({
+    enabled: "false", pushInterval: "500", retryCount: "0", blacklist: '["7701"]', lastPushTime: "123",
+  });
+  expect(await exec("HGET", offline, "enabled")).toBe("false");
+  await exec("DEL", other);
+  await exec("SET", other, "保留无效旧值");
+  expect(await command("#公告账号启用")).toContain("操作失败");
+  expect(await exec("HGET", one, "enabled")).toBe("false");
+  expect(await exec("GET", other)).toBe("保留无效旧值");
+  await exec("DEL", other);
+  expect(await command("#公告账号启用")).toContain("已启用 2/2");
+  expect(await command("#公告全局黑名单添加", "ALL")).toContain("已添加 3");
+  expect(await command("#公告全局黑名单删除", "all")).toContain("已删除 3");
+  missingGroups = true;
+  expect(await command("#公告全局黑名单添加", "ALL")).toContain("操作失败");
+  expect(await exec("SMEMBERS", "notice:blacklist")).toEqual(["7799"]);
+  expect(await command("#公告账号统计")).toContain("1 个账号的群数未计入");
+});
+
 test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和撤回", async () => {
   const { commands } = createNoticePlugin(() => redis);
   const ordinary = { isMaster: false, user_id: 10001 };

@@ -11,7 +11,7 @@ interface Lists {
 
 export interface TargetSettings {
   readonly global: Lists;
-  readonly account?: Lists & { readonly enabled: boolean; readonly pushInterval?: number };
+  readonly account?: Lists & { readonly enabled: boolean; readonly pushInterval?: number; readonly retryCount?: number };
 }
 
 const globalKeys = ["notice:whitelist", "notice:blacklist"];
@@ -52,15 +52,31 @@ function parseEnabled(value: unknown): boolean {
 const readLists = `
 local global = {redis.call('SMEMBERS', KEYS[1]), redis.call('SMEMBERS', KEYS[2])}
 if #KEYS == 2 then return global end
-local account = redis.call('HMGET', KEYS[3], 'whitelist', 'blacklist', 'enabled', 'pushInterval')
-return {global[1], global[2], account[1], account[2], account[3], account[4]}
+local account = redis.call('HMGET', KEYS[3], 'whitelist', 'blacklist', 'enabled', 'pushInterval', 'retryCount')
+return {global[1], global[2], account[1], account[2], account[3], account[4], account[5]}
+`;
+
+const setAccounts = `
+for _, key in ipairs(KEYS) do
+  local kind = redis.call('TYPE', key).ok
+  if kind ~= 'none' and kind ~= 'hash' then
+    return redis.error_reply('invalid notice account config')
+  end
+end
+for _, key in ipairs(KEYS) do
+  redis.call('HSET', key, ARGV[1], ARGV[2])
+  redis.call('EXPIRE', key, 2592000)
+end
+return #KEYS
 `;
 
 const editGlobal = `
-if ARGV[1] == 'add' then
-  return redis.call('SADD', KEYS[1], unpack(ARGV, 2))
+local operation = ARGV[1] == 'add' and 'SADD' or 'SREM'
+local changed = 0
+for first = 2, #ARGV, 500 do
+  changed = changed + redis.call(operation, KEYS[1], unpack(ARGV, first, math.min(#ARGV, first + 499)))
 end
-return redis.call('SREM', KEYS[1], unpack(ARGV, 2))
+return changed
 `;
 
 const editAccount = `
@@ -112,12 +128,13 @@ export function createTargetStore(redis: Redis) {
     async settings(account?: string): Promise<TargetSettings> {
       const keys = account === undefined ? globalKeys : [...globalKeys, accountKey(account)];
       const result = await redis.eval(readLists, { keys, arguments: [] });
-      if (!Array.isArray(result) || result.length !== (account === undefined ? 2 : 6)) {
+      if (!Array.isArray(result) || result.length !== (account === undefined ? 2 : 7)) {
         throw new Error("无法读取公告目标群配置");
       }
       const global = { whitelist: parseIds(result[0]), blacklist: parseIds(result[1]) };
       if (account === undefined) return { global };
       const interval = Number(result[5]);
+      const retries = result[6] === null ? NaN : Number(result[6]);
       return {
         global,
         account: {
@@ -125,6 +142,7 @@ export function createTargetStore(redis: Redis) {
           blacklist: parseAccountList(result[3]),
           enabled: parseEnabled(result[4]),
           pushInterval: Number.isInteger(interval) && interval >= 500 && interval <= 10_000 ? interval : undefined,
+          ...(Number.isInteger(retries) && retries >= 0 && retries <= 10 ? { retryCount: retries } : {}),
         },
       };
     },
@@ -143,6 +161,14 @@ export function createTargetStore(redis: Redis) {
           arguments: [list, operation, ...ids],
         });
       if (typeof result !== "number") throw new Error("公告名单写入失败");
+      return result;
+    },
+
+    async setAccounts(accounts: readonly string[], field: "enabled" | "pushInterval" | "retryCount", value: boolean | number) {
+      const keys = [...new Set(accounts)].map(accountKey);
+      if (!keys.length) return 0;
+      const result = await redis.eval(setAccounts, { keys, arguments: [field, String(value)] });
+      if (typeof result !== "number") throw new Error("公告账号配置写入失败");
       return result;
     },
   };
