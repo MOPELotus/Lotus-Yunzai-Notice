@@ -15,6 +15,8 @@ export interface NoticeRedis {
 export interface Notice {
   readonly id: string;
   readonly content: string;
+  readonly creator: string;
+  readonly status?: string;
   readonly timestamp: string;
   readonly segments?: readonly NoticeSegment[];
   readonly segmentSource?: string;
@@ -24,7 +26,7 @@ function activeNotice(id: string, entry: Record<string, string>): Notice | undef
   if (!entry.content?.trim() || !entry.timestamp || !entry.creator ||
       ["已撤回", "recalled"].includes(entry.status ?? "")) return;
 
-  const notice = { id, content: entry.content, timestamp: entry.timestamp };
+  const notice = { id, content: entry.content, creator:entry.creator, status:entry.status, timestamp: entry.timestamp };
   if (!entry.segments) return notice;
   const segments = decodeNoticeSegments(entry.segments, entry.content);
   return { ...notice, segmentSource: entry.segments, ...(segments ? { segments } : {}) };

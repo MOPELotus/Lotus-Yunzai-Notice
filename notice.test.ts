@@ -161,6 +161,7 @@ test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和�
   await exec("LPUSH", "notice:history", "99999AAA");
 
   expect(await commands["#公告"]()).toContain(content);
+  expect(await commands["#公告"]()).toContain("状态 当前\n发布者 10003");
   expect(await commands["#发布公告"]("冒充", ordinary)).toContain("仅机器人主人");
   expect(await commands["#编辑公告"]("冒充", ordinary)).toContain("仅机器人主人");
   expect(await commands["#撤回公告"]("", ordinary)).toContain("仅机器人主人");
@@ -175,6 +176,7 @@ test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和�
   expect(replies.some((reply) => typeof reply === "string" && reply.includes(currentId))).toBe(true);
   expect(await exec("HGET", `notice:ann:${oldId}`, "status")).toBe("已归档");
   expect(await commands["#历史公告"](oldId)).toContain(content);
+  expect(await commands["#历史公告"](oldId)).toContain("状态 已归档\n发布者 10003");
   expect(await commands["#全部历史公告"]("1")).toContain(oldId);
   expect(await commands["#全部历史公告"]("1")).not.toContain("99999AAA");
 
@@ -784,7 +786,7 @@ test.skipIf(!available)("发布、读取、推送和编辑按顺序保留公告�
   expect(await exec("HGET", "notice:ann:" + current.id, "content")).toBe(current.content);
   expect(JSON.parse(await exec("HGET", "notice:ann:" + current.id, "segments") as string)).toEqual([...body]);
   expect(await commands["#公告"]()).toEqual([
-    { type: "text", text: `【当前公告】 ${current.id}\n${current.timestamp}\n` }, ...body,
+    { type: "text", text: `【当前公告】 ${current.id}\n${current.timestamp}\n状态 当前\n发布者 20001\n` }, ...body,
   ]);
 
   const sent: NoticeReply[] = [];
@@ -806,12 +808,12 @@ test.skipIf(!available)("发布、读取、推送和编辑按顺序保留公告�
     message: [{ type: "text", text: "#编辑公告" }, { type: "image", file: inline }],
   })).toBe("公告已更新。");
   expect(await commands["#公告"]()).toEqual([
-    { type: "text", text: `【当前公告】 ${current.id}\n${current.timestamp}\n` },
+    { type: "text", text: `【当前公告】 ${current.id}\n${current.timestamp}\n状态 当前\n发布者 20001\n` },
     { type: "image", file: inline },
   ]);
   expect(await commands["#发布公告"]("已切换到普通文字", owner)).toContain("公告已发布");
   expect(await commands["#历史公告"](current.id)).toEqual([
-    { type: "text", text: `【历史公告】 ${current.id}\n${current.timestamp}\n` },
+    { type: "text", text: `【历史公告】 ${current.id}\n${current.timestamp}\n状态 已归档\n发布者 20001\n` },
     { type: "image", file: inline },
   ]);
   expect(await commands["#全部历史公告"]("1")).toContain("[图片]");

@@ -38,7 +38,10 @@ const ownerDeliveryHelp = [
 ].join("\n");
 
 function format(item: Notice, title: string): NoticeReply {
-  return decorateNotice(item.content, item.segments, `【${title}】 ${item.id}\n${item.timestamp}\n`);
+  const heading = [`【${title}】 ${item.id}`, item.timestamp];
+  if (item.status) heading.push(`状态 ${item.status}`);
+  heading.push(`发布者 ${item.creator}`);
+  return decorateNotice(item.content, item.segments, heading.join("\n") + "\n");
 }
 
 function owner(handler: Handler): Handler {
