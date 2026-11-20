@@ -82,9 +82,12 @@ type PresentArticle = (
   game: AnnouncementGame, id: string, url: string, signal: AbortSignal,
 ) => Promise<{ readonly title: string; readonly pictures: readonly NoticeSegment[] } | undefined>;
 
+type PresentList = (game: AnnouncementGame, kind: AnnouncementKind, posts: readonly OfficialAnnouncement[],
+  signal: AbortSignal) => Promise<NoticeSegment | undefined>;
+
 export function createOfficialAnnouncements(
   getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, config: AnnouncementConfig, signal?: AbortSignal,
-  feed = createAnnouncementSource(), now = Date.now, whenActive?: (start: () => void) => () => void, presentArticle?: PresentArticle,
+  feed = createAnnouncementSource(), now = Date.now, whenActive?: (start: () => void) => () => void, presentArticle?: PresentArticle, presentList?: PresentList,
 ) {
   const lifecycle = new AbortController();
   const active = signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal;
@@ -301,9 +304,16 @@ export function createOfficialAnnouncements(
         try {
           const posts = (await feed(game, active, kind, 5)).slice(0, 5);
           if (!posts.length) return `暂无${name}${label}。`;
-          return [`${name}${label}列表`, ...posts.flatMap((post, index) => [
+          const links = [`${name}${label}列表`, ...posts.flatMap((post, index) => [
             `${index + 1}. ${post.title}`, link(game, post.id),
           ])].join("\n");
+          try {
+            const image = await presentList?.(game, kind, posts, active);
+            if (image) return [image, { type: "text", text: links }];
+          } catch {
+            // Keep the links visible when list rendering is unavailable.
+          }
+          return links;
         } catch {
           return `米游社${label}暂不可用。`;
         }

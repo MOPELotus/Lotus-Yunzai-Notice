@@ -7,7 +7,7 @@ import type { NoticeReply } from "./content.ts";
 import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
 import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
-import { createAnnouncementSource, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
+import { createAnnouncementSource, readAnnouncementFeed, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
 import { readOfficialArticle } from "./mys-article-source.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
@@ -77,6 +77,38 @@ test("米游社查询继承详情编号、五条列表、三游戏资讯和摘�
     expect(await service.commands["#原神公告"]!("21", context)).toContain("1-20");
     expect(details).toEqual(["211", "210"]);
     expect(calls).toEqual([["zzz", "info", 20], ["gs", "notice", 20], ["sr", "info", 5]]);
+  } finally {
+    await service.dispose();
+  }
+});
+
+test("米游社列表保持五条来源次序、原首图与可点击回退", async () => {
+  const raw = Array.from({ length: 6 }, (_, index) => ({ post: {
+    post_id: String(355 + index), created_at: 1_790_000_000 + index, subject: `原顺序 ${index + 1}`,
+    content: "<p>公示正文</p><br>甲 &amp; 乙<script>丢弃内容</script>",
+    cover: "https://upload-bbs.miyoushe.com/cover.png", images: ["https://upload-bbs.miyoushe.com/first.png"],
+  } }));
+  const posts = readAnnouncementFeed({ retcode: 0, data: { list: raw } }, 5, true);
+  expect(posts.map(({ id }) => id)).toEqual(["355", "356", "357", "358", "359"]);
+  expect(posts[0]?.listPreview).toEqual({ text: "公示正文 甲 & 乙", image: "https://upload-bbs.miyoushe.com/first.png" });
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [], listGroups: async () => [], sendGroup: async () => { throw new Error("离线夹具不可发送"); },
+    deleteMessage: async () => { throw new Error("离线夹具不可撤回"); },
+  };
+  let fail = false;
+  const service = createOfficialAnnouncements(() => undefined, host, parseAnnouncementConfig(), undefined,
+    async () => posts, undefined, undefined, undefined, async (game, kind, selected) => {
+      expect([game, kind, selected.length]).toEqual(["sr", "info", 5]);
+      if (fail) throw new Error("PNG 暂不可用");
+      return { type: "image", file: "base64://AQI=" };
+    });
+  try {
+    const list = service.commands["#星铁资讯列表"]!;
+    const text = "星铁资讯列表\n" + posts.map((post, index) =>
+      `${index + 1}. ${post.title}\nhttps://www.miyoushe.com/sr/article/${post.id}`).join("\n");
+    expect(await list("", { isMaster: false })).toEqual([{ type: "image", file: "base64://AQI=" }, { type: "text", text }]);
+    fail = true;
+    expect(await list("", { isMaster: false })).toBe(text);
   } finally {
     await service.dispose();
   }

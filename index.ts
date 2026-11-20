@@ -2,6 +2,7 @@ import { decorateNotice, parseNoticeInput, type InboundNoticeSegment, type Notic
 import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost } from "./delivery.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
 import { configuredAnnouncements } from "./mys-announcement-config.ts";
+import { createAnnouncementListRenderer } from "./mys-list-card.ts";
 import { createArticleSource } from "./mys-article-source.ts";
 import { renderOfficialArticle } from "./mys-article-card.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
@@ -265,13 +266,14 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
     console.warn("[notice] 无法读取公告定时配置，定时推送未启动。");
   }
   try {
-    const config = configuredAnnouncements(new URL("../../", import.meta.url));
+    const root = new URL("../../", import.meta.url);
+    const config = configuredAnnouncements(root);
     const articleSource = createArticleSource();
     const official = createOfficialAnnouncements(hostRedis, noticeGroups, config, signal, undefined, undefined, whenNoticeActive,
       async (game, id, url, active) => {
         const article = await articleSource(game, id, active);
         if (article) return { title: article.title, pictures: await renderOfficialArticle(article, url, active) };
-      });
+      }, createAnnouncementListRenderer(root));
     Object.assign(module.commands, official.commands);
     aliases = official.aliases;
     disposers.push(official.dispose);

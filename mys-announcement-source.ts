@@ -1,3 +1,5 @@
+import { load } from "cheerio";
+
 export const announcementGames = {
   gs: { id: 2, name: "原神", slug: "ys" },
   sr: { id: 6, name: "星铁", slug: "sr" },
@@ -13,6 +15,7 @@ export interface OfficialAnnouncement {
   readonly title: string;
   readonly summary?: string;
   readonly image?: string;
+  readonly listPreview?: { readonly text?: string; readonly image?: string };
 }
 
 function mapping(value: unknown): Record<string, unknown> {
@@ -35,6 +38,14 @@ export function postImage(value: unknown): string | undefined {
   if (url?.protocol === "https:" && !url.username && !url.password && !url.port && imageHosts.has(url.hostname)) return url.href;
 }
 
+function previewText(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim() || value.trimStart().startsWith("{")) return;
+  const $ = load(value.slice(0, 16_000), { scriptingEnabled: false }, false);
+  $("script,style,template,iframe,object,svg").remove();
+  $("br").replaceWith(" ");
+  return text($.root().text().replace(/\s+/gu, " "), 300);
+}
+
 export function readAnnouncementFeed(value: unknown, limit = 10, sourceOrder = false): readonly OfficialAnnouncement[] {
   const response = mapping(value);
   const list = mapping(response.data).list;
@@ -47,12 +58,15 @@ export function readAnnouncementFeed(value: unknown, limit = 10, sourceOrder = f
     const created = post.created_at;
     const title = text(post.subject, 200);
     if (typeof id !== "string" || !/^[1-9]\d{0,19}$/u.test(id) || typeof created !== "number" ||
-        !Number.isSafeInteger(created) || created <= 0 || !title || post.is_deleted === true || post.is_deleted === 1) continue;
+        !Number.isSafeInteger(created) || created <= 0 || created > 253402300799 || !title || post.is_deleted === true || post.is_deleted === 1) continue;
     const preview = Array.isArray(entry.image_list) ? entry.image_list[0] : undefined;
-    posts.set(id, {
-      id, created, title, summary: text(post.summary, 300) ?? text(entry.text_summary, 300),
-      image: postImage(post.cover) ?? postImage(mapping(entry.cover).url) ?? postImage(mapping(preview).url),
-    });
+    const summary = text(post.summary, 300) ?? text(entry.text_summary, 300);
+    const image = postImage(post.cover) ?? postImage(mapping(entry.cover).url) ?? postImage(mapping(preview).url);
+    const listPreview = limit === 5 ? {
+      text: previewText(post.content) ?? summary,
+      image: postImage(Array.isArray(post.images) ? post.images[0] : undefined) ?? image,
+    } : undefined;
+    posts.set(id, { id, created, title, summary, image, ...(listPreview && { listPreview }) });
   }
   return sourceOrder ? [...posts.values()] : [...posts.values()].sort((left, right) => left.created - right.created || left.id.length - right.id.length || left.id.localeCompare(right.id));
 }
