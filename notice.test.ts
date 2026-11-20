@@ -7,7 +7,7 @@ import type { NoticeReply } from "./content.ts";
 import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
 import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
-import { createAnnouncementSource, type AnnouncementGame } from "./mys-announcement-source.ts";
+import { createAnnouncementSource, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { createNoticeDelivery, type NoticeDeliveryHost } from "./delivery.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
@@ -1003,6 +1003,56 @@ test.skipIf(!available)("米游社订阅命令持久覆盖旧名单，停止后�
   } finally {
     await service.dispose();
   }
+});
+
+test.skipIf(!available)("资讯延用三游戏原配置、类型请求、公告共用额度和旧去重键", async () => {
+  const wall = 1_800_000_000;
+  const config = parseAnnouncementConfig(`
+maxNum: 1
+gsannounceGroup: { '70': [90] }
+gsinfoGroup: { '70': [90] }
+srinfoGroup: { '70': [91] }
+zzzinfoGroup: { '71': [92] }
+`);
+  const calls: [AnnouncementGame, AnnouncementKind][] = [];
+  const sent: [number, NoticeReply][] = [];
+  const remote = createAnnouncementSource((async input => {
+    const url = new URL(input as URL);
+    expect(url.searchParams.get("type")).toBe("3");
+    return Response.json({ retcode:0, data:{list:[]} });
+  }) as typeof fetch);
+  await remote("sr", new AbortController().signal, "info");
+  const host: NoticeDeliveryHost = {
+    onlineBots:()=>[70],
+    async listGroups() { return [{id:90},{id:91}]; },
+    async sendGroup(_bot, group, body) { sent.push([group,body]); return 501; },
+    async deleteMessage() {},
+  };
+  const feed = async (game: AnnouncementGame, _signal: AbortSignal, kind: AnnouncementKind = "notice") => {
+    calls.push([game,kind]);
+    const id = game === "sr" ? "1020" : kind === "info" ? "1000" : "1001";
+    return [{id,created:wall - (kind === "info" ? 2 : 3), title:kind === "info" ? "资讯样本" : "公告样本"}];
+  };
+  const service = createOfficialAnnouncements(() => redis, host, config, undefined, feed, () => wall * 1000);
+  const group = {isMaster:false,message_type:"group",self_id:70,group_id:90,member:{is_admin:true,is_owner:false}};
+  try {
+    await exec("SET","Yz:sr:mys:newPush:70:91:1020","1","EX","36000");
+    expect(await service.run()).toMatchObject({confirmed:1,skipped:1});
+    expect(calls).toEqual([["gs","notice"],["gs","info"],["sr","info"]]);
+    expect(sent).toEqual([[90,"【原神资讯】资讯样本\nhttps://www.miyoushe.com/ys/article/1000"]]);
+    expect(await exec("GET","Yz:gs:mys:newPush:70:90:1000")).toBe("1");
+    expect(await exec("GET","Yz:gs:mys:newPush:70:90:1001")).toBeNull();
+    expect(await service.commands["#关闭资讯推送"]!("",group)).toBe("原神资讯推送已关闭。");
+    calls.length = 0;
+    expect(await service.run(["gs"])).toMatchObject({confirmed:1});
+    expect(calls).toEqual([["gs","notice"]]);
+    expect(sent[1]).toEqual([90,"【原神公告】公告样本\nhttps://www.miyoushe.com/ys/article/1001"]);
+    expect(await service.commands["#推送资讯"]!("",{isMaster:false})).toContain("机器人主人");
+    expect(await service.commands["#原神开启资讯推送"]!("",group)).toBe("原神资讯推送已开启。");
+    calls.length = 0;
+    expect(await service.commands["#原神推送资讯"]!("",{isMaster:true})).toContain("已去重 1");
+    expect(calls).toEqual([["gs","info"]]);
+  } finally { await service.dispose(); }
 });
 
 test.skipIf(!available)("旧 cron 实际触发米游社订阅，只从当前在线账号向订阅群发送", async () => {

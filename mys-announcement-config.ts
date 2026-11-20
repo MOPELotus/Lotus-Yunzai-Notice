@@ -11,6 +11,7 @@ export interface AnnouncementConfig {
   readonly maxNum: number;
   readonly ban: Readonly<Partial<Record<AnnouncementGame, RegExp>>>;
   readonly targets: Readonly<Record<AnnouncementGame, readonly AnnouncementTarget[]>>;
+  readonly infoTargets: Readonly<Record<AnnouncementGame, readonly AnnouncementTarget[]>>;
 }
 
 const defaultBan = {
@@ -41,19 +42,22 @@ export function parseAnnouncementConfig(yaml = "{}"): AnnouncementConfig {
   const words = mapping(config.banWord);
   const ban: Partial<Record<AnnouncementGame, RegExp>> = {};
   const targets: Record<AnnouncementGame, AnnouncementTarget[]> = { gs: [], sr: [], zzz: [] };
+  const infoTargets: Record<AnnouncementGame, AnnouncementTarget[]> = { gs: [], sr: [], zzz: [] };
   for (const game of Object.keys(announcementGames) as AnnouncementGame[]) {
     const pattern = words[game] ?? defaultBan[game];
     if (typeof pattern === "string" && pattern) ban[game] = new RegExp(pattern, "u");
-    for (const [bot, groups] of Object.entries(mapping(config[`${game}announceGroup`]))) {
-      const botId = numberId(bot);
-      if (!botId || !Array.isArray(groups)) throw new Error("米游社推送目标格式无效。");
-      for (const groupId of new Set(groups.map(numberId))) {
-        if (!groupId) throw new Error("米游社推送群号无效。");
-        targets[game].push({ botId, groupId });
+    for (const [suffix, destination] of [["announceGroup",targets], ["infoGroup",infoTargets]] as const) {
+      for (const [bot, groups] of Object.entries(mapping(config[`${game}${suffix}`]))) {
+        const botId = numberId(bot);
+        if (!botId || !Array.isArray(groups)) throw new Error("米游社推送目标格式无效。");
+        for (const groupId of new Set(groups.map(numberId))) {
+          if (!groupId) throw new Error("米游社推送群号无效。");
+          destination[game].push({ botId, groupId });
+        }
       }
     }
   }
-  return { cron, maxNum, ban, targets };
+  return { cron, maxNum, ban, targets, infoTargets };
 }
 
 export function configuredAnnouncements(root: URL): AnnouncementConfig {

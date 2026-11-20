@@ -5,6 +5,7 @@ export const announcementGames = {
 } as const;
 
 export type AnnouncementGame = keyof typeof announcementGames;
+export type AnnouncementKind = "notice" | "info";
 
 export interface OfficialAnnouncement {
   readonly id: string;
@@ -54,9 +55,9 @@ export function readAnnouncementFeed(value: unknown): readonly OfficialAnnouncem
 }
 
 export function createAnnouncementSource(transport: typeof fetch = fetch) {
-  return async (game: AnnouncementGame, signal: AbortSignal): Promise<readonly OfficialAnnouncement[]> => {
+  return async (game: AnnouncementGame, signal: AbortSignal, kind: AnnouncementKind = "notice"): Promise<readonly OfficialAnnouncement[]> => {
     const url = new URL("https://bbs-api-static.miyoushe.com/painter/wapi/getNewsList");
-    url.search = new URLSearchParams({ gids: String(announcementGames[game].id), page_size: "10", type: "1" }).toString();
+    url.search = new URLSearchParams({ gids: String(announcementGames[game].id), page_size: "10", type: kind === "info" ? "3" : "1" }).toString();
     const response = await transport(url, {
       method: "GET", redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
       headers: { Accept: "application/json", Referer: "https://www.miyoushe.com/", "User-Agent": "Mozilla/5.0" },

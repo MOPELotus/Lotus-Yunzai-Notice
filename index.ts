@@ -230,8 +230,9 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
   groups: NoticeDeliveryHost; noticeGroups?: NoticeDeliveryHost; signal?: AbortSignal;
   whenNoticeActive?: (start: () => void) => () => void;
 }):
-  ReturnType<typeof createNoticePlugin> & { dispose?: () => Promise<void> } {
+  ReturnType<typeof createNoticePlugin> & { aliases?: Record<string,string>; dispose?: () => Promise<void> } {
   const module = createNoticePlugin(hostRedis, noticeGroups, signal);
+  let aliases: Record<string,string> | undefined;
   const disposers: (() => Promise<void>)[] = [];
   try {
     const window = configuredNoticeSchedule();
@@ -252,12 +253,13 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
     const config = configuredAnnouncements(new URL("../../", import.meta.url));
     const official = createOfficialAnnouncements(hostRedis, noticeGroups, config, signal, undefined, undefined, whenNoticeActive);
     Object.assign(module.commands, official.commands);
+    aliases = official.aliases;
     disposers.push(official.dispose);
   } catch {
     console.warn("[notice] 无法读取米游社公告推送配置。");
   }
   if (!disposers.length) return module;
-  return { ...module, async dispose() { await Promise.all(disposers.map((dispose) => dispose())); } };
+  return { ...module, aliases, async dispose() { await Promise.all(disposers.map((dispose) => dispose())); } };
 }
 
 export default createNoticePlugin();
