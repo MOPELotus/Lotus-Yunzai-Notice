@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { createNoticeDelivery, type NoticeDeliveryHost } from "./delivery.ts";
+import { createNoticeDelivery, noticeAccounts, type NoticeDeliveryHost } from "./delivery.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
 
 const dayFormat = new Intl.DateTimeFormat("sv-SE", {
   timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
 });
 const minute = 60_000;
+const accountRetryDelay = 5_000;
 const day = 1_440 * minute;
 const stateKey = (date: string) => `notice:schedule:${date}`;
 
@@ -101,9 +102,13 @@ redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
 return 1
 `;
 
-async function deliverScheduled(redis: NoticeRedis, host: NoticeDeliveryHost, date: string, signal: AbortSignal) {
+async function deliverScheduled(
+  redis: NoticeRedis, host: NoticeDeliveryHost, date: string, signal: AbortSignal, inSlot: () => boolean,
+): Promise<"awaiting-account" | undefined> {
   const notice = await createNoticeStore(redis).current(true);
-  if (signal.aborted) return;
+  if (signal.aborted || !inSlot()) return;
+  const accounts = noticeAccounts(host);
+  if (!accounts.length) return "awaiting-account";
 
   const noticeId = notice?.id ?? "";
   const key = stateKey(date);
@@ -116,7 +121,7 @@ async function deliverScheduled(redis: NoticeRedis, host: NoticeDeliveryHost, da
 
   let state = "error";
   try {
-    const result = await createNoticeDelivery(redis, host).push(signal, notice);
+    const result = await createNoticeDelivery(redis, host).push(signal, notice, accounts);
     state = result.stopped ?? (result.selected ? "completed" : "no-targets");
   } finally {
     await redis.eval(finishDay, {
@@ -144,19 +149,24 @@ export function startNoticeScheduler(
   function arm(earliest = timer.now()) {
     if (controller.signal.aborted) return;
     const slot = nextSlot(Math.max(earliest, timer.now()), window);
+    const attemptAt = Math.max(slot.at, earliest);
+    const end = slot.at + minute;
+    const inSlot = () => timer.now() < end;
     cancelTimer = timer.schedule(() => {
       if (controller.signal.aborted) return;
-      if (timer.now() < slot.at) {
-        arm(slot.at);
+      if (timer.now() < attemptAt) {
+        arm(attemptAt);
         return;
       }
       const redis = getRedis();
-      active = (redis && timer.now() < slot.at + minute
-        ? deliverScheduled(redis, host, slot.date, controller.signal)
+      active = (redis && inSlot()
+        ? deliverScheduled(redis, host, slot.date, controller.signal, inSlot)
         : Promise.resolve()).catch(() => {
         console.warn("[notice] 定时公告执行未完成。");
-      }).finally(() => arm(slot.at + minute));
-    }, Math.max(0, slot.at - timer.now()));
+      }).then((result) => {
+        arm(result === "awaiting-account" ? Math.min(end, timer.now() + accountRetryDelay) : end);
+      });
+    }, Math.max(0, attemptAt - timer.now()));
   }
 
   if (signal?.aborted) stop();

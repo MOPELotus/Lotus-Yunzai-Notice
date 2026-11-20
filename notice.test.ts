@@ -548,6 +548,66 @@ test.skipIf(!available)("启动不会补跑错过的窗口，公告换版不会�
   }
 });
 
+test.skipIf(!available)("定时槽内等待网关绑定，不提前占用当天投递，过期后不补发", async () => {
+  const client = redis!;
+  const noticeId = (await createNoticeStore(client).publish("冷启动公告", "20001"))!;
+  const window = parseNoticeSchedule("scheduleTime: '8:00-8:00'")!;
+  const timer = fakeScheduleClock("2026-11-19T08:00:00+08:00");
+  const firstDay = "notice:schedule:2026-11-19";
+  const secondDay = "notice:schedule:2026-11-20";
+  const requests: number[] = [];
+  let bound = false;
+  let groups = [{ id: 10001 }];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [20001],
+    async listGroups() { throw new Error("应使用已绑定快照"); },
+    async sendGroup() { throw new Error("应使用已绑定快照"); },
+    async deleteMessage() {},
+    noticeAccounts: () => bound ? [{
+      botId: 20001,
+      adapter: "milky",
+      async listGroups() { return groups; },
+      async sendGroup(groupId) { requests.push(groupId); return 15; },
+    }] : [],
+  };
+  const first = startNoticeScheduler(() => client, host, window, undefined, timer);
+  const second = startNoticeScheduler(() => client, host, window, undefined, timer);
+  try {
+    timer.advance("2026-11-19T08:00:00+08:00");
+    await waitFor(() => expect(timer.planned).toEqual(Array(2).fill(Date.parse("2026-11-19T08:00:05+08:00"))));
+    expect(await exec("GET", firstDay)).toBeNull();
+    expect(requests).toEqual([]);
+
+    bound = true;
+    timer.advance("2026-11-19T08:00:05+08:00");
+    await waitFor(async () => {
+      expect(await exec("GET", firstDay)).toBe(JSON.stringify({ state: "completed", noticeId }));
+      expect(timer.planned).toEqual(Array(2).fill(Date.parse("2026-11-20T08:00:00+08:00")));
+    });
+    expect(requests).toEqual([10001]);
+
+    const nextNoticeId = (await createNoticeStore(client).publish("下一天公告", "20001"))!;
+    bound = false;
+    timer.advance("2026-11-20T08:00:00+08:00");
+    await waitFor(() => expect(timer.planned).toEqual(Array(2).fill(Date.parse("2026-11-20T08:00:05+08:00"))));
+    bound = true;
+    timer.advance("2026-11-20T08:01:00+08:00");
+    await waitFor(() => expect(timer.planned).toEqual(Array(2).fill(Date.parse("2026-11-21T08:00:00+08:00"))));
+    expect(await exec("GET", secondDay)).toBeNull();
+    expect(requests).toEqual([10001]);
+
+    groups = [];
+    timer.advance("2026-11-21T08:00:00+08:00");
+    await waitFor(async () => {
+      expect(await exec("GET", "notice:schedule:2026-11-21")).toBe(JSON.stringify({ state: "no-targets", noticeId: nextNoticeId }));
+      expect(timer.planned).toEqual(Array(2).fill(Date.parse("2026-11-22T08:00:00+08:00")));
+    });
+    expect(requests).toEqual([10001]);
+  } finally {
+    await Promise.all([first(), second()]);
+  }
+});
+
 test.skipIf(!available)("关闭时等待在途确认，重启跳过状态已开始的同一计划", async () => {
   const client = redis!;
   const noticeId = (await createNoticeStore(client).publish("关闭定时测试", "20001"))!;

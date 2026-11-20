@@ -180,14 +180,14 @@ export function createNoticeDelivery(
   }
 
   return {
-    async push(signal?: AbortSignal, scheduled?: Notice): Promise<Result> {
+    async push(signal?: AbortSignal, scheduled?: Notice, accounts?: readonly NoticeAccount[]): Promise<Result> {
       const result: Result = { selected: 0, receipts: [], alreadyClaimed: 0, discoveryFailures: 0 };
       if (signal?.aborted) return { ...result, stopped: "cancelled" };
       const notice = scheduled ?? await notices.current();
       if (!notice) return result;
       result.noticeId = notice.id;
       const destinations = new Map<number, { groupId: number; interval: number; account: NoticeAccount }>();
-      for (const account of noticeAccounts(host)) {
+      for (const account of accounts ?? noticeAccounts(host)) {
         const { botId } = account;
         if (signal?.aborted) return { ...result, stopped: "cancelled" };
         try {
