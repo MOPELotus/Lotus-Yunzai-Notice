@@ -8,6 +8,8 @@ import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
 import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
 import { createAnnouncementSource, readAnnouncementFeed, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
+import { readImage } from "./mys-card-draw.ts";
+import { readPublicMys } from "./mys-public-request.ts";
 import { createArticleSource, readOfficialArticle } from "./mys-article-source.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
@@ -143,6 +145,101 @@ test("米游社详情保留内联强调，公开别名仅在接口不可用时�
     ],
   });
   expect(result?.blocks[1]).toEqual({ type: "text", text: "普通链接", align: "left", heading: false });
+});
+
+test("米游社列表仅对已核公开域回退并保留请求参数", async () => {
+  const calls: URL[] = [];
+  const empty = { retcode: 0, data: { list: [] } };
+  const ok = { retcode: 0, data: { list: [{ post: { post_id: "18", created_at: 1_790_000_000, subject: "公告" } }] } };
+  for (const [game, kind, gids, type] of [["gs", "notice", "2", "1"], ["sr", "info", "6", "3"], ["zzz", "notice", "8", "1"]] as const) {
+    calls.length = 0;
+    const source = createAnnouncementSource((async (input, init) => {
+      const url = new URL(String(input));
+      calls.push(url);
+      expect(init?.credentials).toBe("omit");
+      expect(init?.redirect).toBe("manual");
+      expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+      if (calls.length === 1) throw new TypeError("TLS");
+      return Response.json(ok);
+    }));
+    expect((await source(game, new AbortController().signal, kind, 5)).map((value) => value.id)).toEqual(["18"]);
+    expect(calls.map((url) => url.hostname)).toEqual(["bbs-api-static.miyoushe.com", "bbs-api.mihoyo.com"]);
+    expect(calls.map((url) => [url.pathname, url.search])).toEqual(
+      Array(2).fill(["/painter/wapi/getNewsList", `?gids=${gids}&page_size=5&type=${type}`]),
+    );
+  }
+
+  let contacted = 0;
+  for (const reply of [
+    new Response(null, { status: 401 }), new Response(null, { status: 403 }), new Response(null, { status: 429 }),
+    new Response(null, { status: 302, headers: { Location: "https://outside.invalid/" } }),
+    Response.json({ retcode: -100, message: "权限" }), new Response("损坏 JSON"),
+  ]) {
+    contacted = 0;
+    const source = createAnnouncementSource((async () => { contacted++; return reply; }));
+    await expect(source("gs", new AbortController().signal, "notice", 5)).rejects.toThrow();
+    expect(contacted).toBe(1);
+  }
+
+  contacted = 0;
+  const emptySource = createAnnouncementSource((async () => { contacted++; return Response.json(empty); }));
+  expect(await emptySource("gs", new AbortController().signal, "notice", 5)).toEqual([]);
+  expect(contacted).toBe(1);
+
+  const cancel = new AbortController();
+  contacted = 0;
+  const cancelled = createAnnouncementSource((async () => { contacted++; cancel.abort(); throw new TypeError("TLS"); }));
+  await expect(cancelled("gs", cancel.signal)).rejects.toThrow();
+  expect(contacted).toBe(1);
+});
+
+test("米游社公开图仅切换已核 CDN 同路径，权限、重定向和异常媒体均终止", async () => {
+  const addr = "https://upload-bbs.miyoushe.com/upload/2/same.png?x-oss-process=z%3D1";
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAIGNIUk0AAHomAACAhAAA+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAAGYktHRAD/AP8A/6C9p5MAAAAWSURBVAjXY3yzxImBgYGJgYGBgYEBABasAdZTeLQfAAAAAElFTkSuQmCC", "base64");
+  const calls: URL[] = [];
+  const decoded = await readImage(addr, new AbortController().signal, (async (input, init) => {
+    const url = new URL(String(input));
+    calls.push(url);
+    expect(init?.credentials).toBe("omit");
+    expect(new Headers(init?.headers).has("Cookie")).toBe(false);
+    if (calls.length === 1) return new Response(null, { status: 503 });
+    return new Response(png, { headers: { "Content-Type": "image/png" } });
+  }));
+  expect([decoded?.width, decoded?.height]).toEqual([2, 2]);
+  expect(calls.map((call) => call.href)).toEqual([addr, addr.replace("miyoushe.com", "mihoyo.com")]);
+
+  for (const reply of [
+    new Response(null, { status: 401 }), new Response(null, { status: 403 }), new Response(null, { status: 429 }),
+    new Response(null, { status: 302, headers: { Location: "https://outside.invalid/" } }),
+    new Response(png, { headers: { "Content-Type": "text/html" } }),
+  ]) {
+    let count = 0;
+    expect(await readImage(addr, new AbortController().signal, (async () => { count++; return reply; }))).toBeUndefined();
+    expect(count).toBe(1);
+  }
+  let count = 0;
+  const fail = async () => { count++; throw new TypeError("TLS"); };
+  expect(await readImage("https://outside.invalid/tile.png", new AbortController().signal, fail)).toBeUndefined();
+  expect(count).toBe(0);
+  expect(await readImage("https://bbs-static.miyoushe.com/tile.png", new AbortController().signal, fail)).toBeUndefined();
+  expect(count).toBe(1);
+});
+
+test("公开源的单域超时独立于外部取消", async () => {
+  const first = new URL("https://bbs-api-static.miyoushe.com/");
+  const second = new URL("https://bbs-api.mihoyo.com/");
+  const contacted: string[] = [];
+  const result = await readPublicMys({ url: first, alternate: second, phaseMs: 8, signal: AbortSignal.timeout(1_000) },
+    ((input, init) => {
+      contacted.push(String(input));
+      if (String(input) === second.href) return Promise.resolve(new Response("ok"));
+      return new Promise((_resolve, reject) => {
+        const active = init!.signal!;
+        active.addEventListener("abort", () => reject(active.reason), { once: true });
+      });
+    }), (response) => response.text());
+  expect(result).toBe("ok");
+  expect(contacted).toEqual([first.href, second.href]);
 });
 
 const serverPath = Bun.which("valkey-server");

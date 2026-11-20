@@ -1,4 +1,5 @@
 import { load } from "cheerio";
+import { readPublicMys, type PublicMysTransport } from "./mys-public-request.ts";
 
 export const announcementGames = {
   gs: { id: 2, name: "原神", slug: "ys" },
@@ -71,18 +72,20 @@ export function readAnnouncementFeed(value: unknown, limit = 10, sourceOrder = f
   return sourceOrder ? [...posts.values()] : [...posts.values()].sort((left, right) => left.created - right.created || left.id.length - right.id.length || left.id.localeCompare(right.id));
 }
 
-export function createAnnouncementSource(transport: typeof fetch = fetch) {
+export function createAnnouncementSource(transport: PublicMysTransport = fetch) {
   return async (game: AnnouncementGame, signal: AbortSignal, kind: AnnouncementKind = "notice", limit: 5 | 10 | 20 = 10): Promise<readonly OfficialAnnouncement[]> => {
     const url = new URL("https://bbs-api-static.miyoushe.com/painter/wapi/getNewsList");
     url.search = new URLSearchParams({ gids: String(announcementGames[game].id), page_size: String(limit), type: kind === "info" ? "3" : "1" }).toString();
-    const response = await transport(url, {
-      method: "GET", redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-      headers: { Accept: "application/json", Referer: "https://www.miyoushe.com/", "User-Agent": "Mozilla/5.0" },
+    const alternate = new URL(url.href);
+    alternate.hostname = "bbs-api.mihoyo.com";
+    return readPublicMys({
+      url, alternate, signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]), phaseMs: 4_000, accept: "application/json",
+    }, transport, async (response) => {
+      if (!response.ok) {
+        void response.body?.cancel().catch(() => undefined);
+        throw new Error("米游社公告接口不可用。");
+      }
+      return readAnnouncementFeed(await response.json(), limit, limit !== 10);
     });
-    if (!response.ok) {
-      void response.body?.cancel().catch(() => undefined);
-      throw new Error("米游社公告接口不可用。");
-    }
-    return readAnnouncementFeed(await response.json(), limit, limit !== 10);
   };
 }
