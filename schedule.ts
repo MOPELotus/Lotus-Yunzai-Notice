@@ -30,12 +30,17 @@ const clock: Clock = {
   },
 };
 
-export function parseNoticeSchedule(yaml: string): Window | undefined {
+function scheduleMapping(yaml: string, allowEmpty = false): Record<string, unknown> {
   const parsed: unknown = Bun.YAML.parse(yaml);
+  if (allowEmpty && parsed == null) return {};
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("公告定时配置须为 YAML 映射");
   }
-  const { enableSchedule, scheduleTime = "8:00-8:30" } = parsed as Record<string, unknown>;
+  return parsed as Record<string, unknown>;
+}
+
+function scheduleWindow(config: Record<string, unknown>): Window | undefined {
+  const { enableSchedule, scheduleTime = "8:00-8:30" } = config;
   if (enableSchedule === false) return;
   if (enableSchedule !== undefined && enableSchedule !== true) {
     throw new Error("enableSchedule 须为布尔值");
@@ -57,17 +62,45 @@ export function parseNoticeSchedule(yaml: string): Window | undefined {
   return { start, end };
 }
 
-export function configuredNoticeSchedule(): Window | undefined {
-  const explicit = Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG;
-  const source = explicit || new URL("../../config/notice.yaml", import.meta.url);
-  let yaml: string;
+export function parseNoticeSchedule(yaml: string): Window | undefined {
+  return scheduleWindow(scheduleMapping(yaml));
+}
+
+function optionalScheduleFile(path: URL): string | undefined {
   try {
-    yaml = readFileSync(source, "utf8");
+    return readFileSync(path, "utf8");
   } catch (error) {
-    if (!explicit && error instanceof Error && "code" in error && error.code === "ENOENT") return;
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
     throw error;
   }
-  return parseNoticeSchedule(yaml);
+}
+
+export function configuredNoticeSchedule(
+  root = new URL("../../", import.meta.url),
+  explicit = Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG,
+): Window | undefined {
+  if (explicit) return parseNoticeSchedule(readFileSync(explicit, "utf8"));
+  const current = optionalScheduleFile(new URL("config/notice.yaml", root));
+  if (current !== undefined) return parseNoticeSchedule(current);
+
+  let foundLegacy = false;
+  let window: Window | undefined;
+  for (const name of ["Notice-plugin", "notice-plugin"]) {
+    const legacy = new URL(`plugins/${name}/config/`, root);
+    const settings = optionalScheduleFile(new URL("config.yaml", legacy));
+    const defaults = optionalScheduleFile(new URL("config_default.yaml", legacy));
+    if (settings === undefined && defaults === undefined) continue;
+    const candidate = scheduleWindow({
+      ...scheduleMapping(defaults ?? "{}", true),
+      ...scheduleMapping(settings ?? "{}", true),
+    });
+    if (foundLegacy && (candidate?.start !== window?.start || candidate?.end !== window?.end)) {
+      throw new Error("两处旧公告定时配置不一致，请在 config/notice.yaml 指定使用的窗口");
+    }
+    window = candidate;
+    foundLegacy = true;
+  }
+  return window;
 }
 
 function nextSlot(now: number, window: Window) {

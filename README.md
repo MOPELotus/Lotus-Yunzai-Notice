@@ -30,7 +30,7 @@
 
 ## 定时推送
 
-在主仓 `config/notice.yaml` 放入旧版的 `enableSchedule` 和 `scheduleTime`，或设置 `LOTUS_NOTICE_SCHEDULE_CONFIG` 指向旧配置副本。未配置文件时不启动定时任务。示例
+定时推送优先读取 `LOTUS_NOTICE_SCHEDULE_CONFIG` 指定的文件，其次读取主仓的 `config/notice.yaml`。升级时两处都未设置，可继续读取旧公告插件保留的 `config/config.yaml` 和 `config/config_default.yaml`，自定义值覆盖默认值。全新安装可以使用以下配置。
 
 ```yaml
 enableSchedule: true

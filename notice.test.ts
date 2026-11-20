@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { NoticeReply } from "./content.ts";
 import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
@@ -10,7 +11,7 @@ import { createAnnouncementSource, type AnnouncementGame } from "./mys-announcem
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { createNoticeDelivery, type NoticeDeliveryHost } from "./delivery.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
-import { parseNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
+import { configuredNoticeSchedule, parseNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
 
 const serverPath = Bun.which("valkey-server");
 const cliPath = Bun.which("valkey-cli");
@@ -64,6 +65,40 @@ afterAll(async () => {
   daemon?.kill();
   await daemon?.exited;
   if (temp) await rm(temp, { recursive: true, force: true });
+});
+
+test("公告自动推送读取旧目录的默认和覆盖配置，显式文件与当前配置优先", async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "lotus-notice-config-"));
+  const root = new URL("./", pathToFileURL(join(fixture, "app.ts")));
+  const legacy = join(fixture, "plugins/Notice-plugin/config");
+  const lower = join(fixture, "plugins/notice-plugin/config");
+  const current = join(fixture, "config/notice.yaml");
+  const explicit = join(fixture, "explicit.yaml");
+  const defaults = 'enableSchedule: true\r\nscheduleTime: "8:00-8:30"\r\n';
+  try {
+    expect(configuredNoticeSchedule(root, "")).toBeUndefined();
+    await Promise.all([mkdir(legacy, { recursive: true }), mkdir(lower, { recursive: true }),
+      mkdir(join(fixture, "config"))]);
+    await writeFile(join(legacy, "config_default.yaml"), defaults);
+    expect(configuredNoticeSchedule(root, "")).toEqual({ start: 480, end: 510 });
+    await writeFile(join(legacy, "config.yaml"), 'scheduleTime: "11:10-11:12"\n');
+    expect(configuredNoticeSchedule(root, "")).toEqual({ start: 670, end: 672 });
+    await writeFile(join(legacy, "config.yaml"), "enableSchedule: false\n");
+    expect(configuredNoticeSchedule(root, "")).toBeUndefined();
+    await writeFile(join(lower, "config.yaml"), 'scheduleTime: "11:10-11:12"\n');
+    expect(() => configuredNoticeSchedule(root, "")).toThrow("两处旧公告定时配置不一致");
+    await writeFile(current, "enableSchedule: false\n");
+    expect(configuredNoticeSchedule(root, "")).toBeUndefined();
+    expect(() => configuredNoticeSchedule(root, explicit)).toThrow("ENOENT");
+    await writeFile(explicit, 'scheduleTime: "2:05-2:05"\n');
+    expect(configuredNoticeSchedule(root, explicit)).toEqual({ start: 125, end: 125 });
+    expect(await readFile(join(legacy, "config_default.yaml"), "utf8")).toBe(defaults);
+    await rm(current);
+    await rm(legacy, { recursive: true });
+    expect(configuredNoticeSchedule(root, "")).toEqual({ start: 670, end: 672 });
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和撤回", async () => {
