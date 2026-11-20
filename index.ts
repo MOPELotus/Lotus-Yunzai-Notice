@@ -2,6 +2,8 @@ import { decorateNotice, parseNoticeInput, type InboundNoticeSegment, type Notic
 import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost } from "./delivery.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
 import { configuredAnnouncements } from "./mys-announcement-config.ts";
+import { createArticleSource } from "./mys-article-source.ts";
+import { renderOfficialArticle } from "./mys-article-card.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { configuredNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
 import { createTargetCommands } from "./target-commands.ts";
@@ -264,7 +266,12 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
   }
   try {
     const config = configuredAnnouncements(new URL("../../", import.meta.url));
-    const official = createOfficialAnnouncements(hostRedis, noticeGroups, config, signal, undefined, undefined, whenNoticeActive);
+    const articleSource = createArticleSource();
+    const official = createOfficialAnnouncements(hostRedis, noticeGroups, config, signal, undefined, undefined, whenNoticeActive,
+      async (game, id, url, active) => {
+        const article = await articleSource(game, id, active);
+        if (article) return { title: article.title, pictures: await renderOfficialArticle(article, url, active) };
+      });
     Object.assign(module.commands, official.commands);
     aliases = official.aliases;
     disposers.push(official.dispose);

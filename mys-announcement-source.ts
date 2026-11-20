@@ -24,20 +24,23 @@ function text(value: unknown, limit: number): string | undefined {
   return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu, " ").trim().slice(0, limit) || undefined;
 }
 
-const imageHosts = new Set(["upload-bbs.miyoushe.com", "upload-bbs.mihoyo.com", "bbs-static.miyoushe.com", "bbs-static.mihoyo.com"]);
+const imageHosts = new Set([
+  "upload-bbs.miyoushe.com", "upload-bbs.mihoyo.com", "bbs-static.miyoushe.com", "bbs-static.mihoyo.com",
+  "img-static.mihoyo.com", "img-static.miyoushe.com",
+]);
 
-function image(value: unknown): string | undefined {
+export function postImage(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > 4096) return;
   const url = URL.parse(value);
   if (url?.protocol === "https:" && !url.username && !url.password && !url.port && imageHosts.has(url.hostname)) return url.href;
 }
 
-export function readAnnouncementFeed(value: unknown): readonly OfficialAnnouncement[] {
+export function readAnnouncementFeed(value: unknown, limit = 10, sourceOrder = false): readonly OfficialAnnouncement[] {
   const response = mapping(value);
   const list = mapping(response.data).list;
   if (response.retcode !== 0 || !Array.isArray(list)) throw new Error("米游社公告接口返回无效。");
   const posts = new Map<string, OfficialAnnouncement>();
-  for (const row of list.slice(0, 10)) {
+  for (const row of list.slice(0, limit)) {
     const entry = mapping(row);
     const post = mapping(entry.post);
     const id = post.post_id;
@@ -48,16 +51,16 @@ export function readAnnouncementFeed(value: unknown): readonly OfficialAnnouncem
     const preview = Array.isArray(entry.image_list) ? entry.image_list[0] : undefined;
     posts.set(id, {
       id, created, title, summary: text(post.summary, 300) ?? text(entry.text_summary, 300),
-      image: image(post.cover) ?? image(mapping(entry.cover).url) ?? image(mapping(preview).url),
+      image: postImage(post.cover) ?? postImage(mapping(entry.cover).url) ?? postImage(mapping(preview).url),
     });
   }
-  return [...posts.values()].sort((left, right) => left.created - right.created || left.id.length - right.id.length || left.id.localeCompare(right.id));
+  return sourceOrder ? [...posts.values()] : [...posts.values()].sort((left, right) => left.created - right.created || left.id.length - right.id.length || left.id.localeCompare(right.id));
 }
 
 export function createAnnouncementSource(transport: typeof fetch = fetch) {
-  return async (game: AnnouncementGame, signal: AbortSignal, kind: AnnouncementKind = "notice"): Promise<readonly OfficialAnnouncement[]> => {
+  return async (game: AnnouncementGame, signal: AbortSignal, kind: AnnouncementKind = "notice", limit: 5 | 10 | 20 = 10): Promise<readonly OfficialAnnouncement[]> => {
     const url = new URL("https://bbs-api-static.miyoushe.com/painter/wapi/getNewsList");
-    url.search = new URLSearchParams({ gids: String(announcementGames[game].id), page_size: "10", type: kind === "info" ? "3" : "1" }).toString();
+    url.search = new URLSearchParams({ gids: String(announcementGames[game].id), page_size: String(limit), type: kind === "info" ? "3" : "1" }).toString();
     const response = await transport(url, {
       method: "GET", redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
       headers: { Accept: "application/json", Referer: "https://www.miyoushe.com/", "User-Agent": "Mozilla/5.0" },
@@ -66,6 +69,6 @@ export function createAnnouncementSource(transport: typeof fetch = fetch) {
       void response.body?.cancel().catch(() => undefined);
       throw new Error("米游社公告接口不可用。");
     }
-    return readAnnouncementFeed(await response.json());
+    return readAnnouncementFeed(await response.json(), limit, limit !== 10);
   };
 }

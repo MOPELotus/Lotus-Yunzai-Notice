@@ -8,12 +8,79 @@ import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
 import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
 import { createAnnouncementSource, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
+import { readOfficialArticle } from "./mys-article-source.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
 import { readUpcomingExpiry, type ActivityGame } from "./mys-activity-source.ts";
 import { createNoticeDelivery, type NoticeDeliveryHost } from "./delivery.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
 import { configuredNoticeSchedule, parseNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
+
+test("米游社详情保留官方图文顺序并排除无法信任的内容", () => {
+  const base = "https://upload-bbs.miyoushe.com/";
+  const id = "11003";
+  const raw = {
+    retcode: 0, data: { post: {
+      post: { post_id: id, subject: "公告标题", created_at: 1_790_000_000,
+        content: `<h2 class="ql-align-center">正文 &amp; 前言</h2><script>不展示</script><p>第一段</p><img src="${base}a.png"><p>第二段</p><img src="http://127.0.0.1/forbidden"><img src="${base}b.png">` },
+      user: { nickname: "作者", avatar_url: `${base}portrait.jpg`, certification: { label: "认证" }, level_exp: { level: 6 } },
+      forum: { name: "活动公告" }, stat: { view_num: 350, like_num: 10, reply_num: 2 }, topics: [{ name: "原神" }],
+    } },
+  };
+  const article = readOfficialArticle(raw, id);
+  expect(article?.author).toBe("作者");
+  expect(article?.forum).toBe("活动公告");
+  expect(article?.counts).toEqual([350, 10, 2]);
+  expect(article?.blocks).toEqual([
+    { type: "text", text: "正文 & 前言", heading: true, align: "center" },
+    { type: "text", text: "第一段", heading: false, align: "left" },
+    { type: "image", url: `${base}a.png` },
+    { type: "text", text: "第二段", heading: false, align: "left" },
+    { type: "image", url: `${base}b.png` },
+  ]);
+  expect(readOfficialArticle(raw, "11004")).toBeUndefined();
+  raw.data.post.post.content = JSON.stringify({ imgs: [`${base}a.png`, `${base}b.png`] });
+  expect(readOfficialArticle(raw, id)?.blocks.map((block) => block.type === "image" && block.url))
+    .toEqual([`${base}a.png`, `${base}b.png`]);
+});
+
+test("米游社查询继承详情编号、五条列表、三游戏资讯和摘要兜底", async () => {
+  const calls: [AnnouncementGame, AnnouncementKind | undefined, number | undefined][] = [];
+  const details: string[] = [];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [], listGroups: async () => [], sendGroup: async () => { throw new Error("离线夹具不可发送"); },
+    deleteMessage: async () => { throw new Error("离线夹具不可撤回"); },
+  };
+  const service = createOfficialAnnouncements(() => undefined, host, parseAnnouncementConfig(), undefined,
+    async (game, _signal, kind, limit) => {
+      calls.push([game, kind, limit]);
+      return Array.from({ length: 7 }, (_, index) => ({
+        id: String(210 + index), created: 1790000000 + index, title: `条目 ${index + 1}`, summary: "摘要",
+      }));
+    }, undefined, undefined, async (_game, id) => {
+      details.push(id);
+      if (id === "211") return { title: "详情标题", pictures: [{ type: "image", file: "base64://AQI=" }] };
+    });
+  try {
+    const context = { isMaster: false };
+    expect(service.aliases["#公告2"]).toBe("#原神公告2");
+    expect(service.aliases["#官方公告"]).toBe("#原神公告");
+    expect(service.aliases["#公告"]).toBeUndefined();
+    expect(await service.commands["#绝区零资讯2"]!("", context)).toEqual([
+      { type: "text", text: "绝区零资讯：详情标题\nhttps://www.miyoushe.com/zzz/article/211" },
+      { type: "image", file: "base64://AQI=" },
+    ]);
+    expect(await service.commands["#原神公告"]!("1", context)).toContain("摘要");
+    const list = await service.commands["#星铁资讯列表"]!("", context);
+    expect(list).toContain("5. 条目 5");
+    expect(list).not.toContain("条目 6");
+    expect(await service.commands["#原神公告"]!("21", context)).toContain("1-20");
+    expect(details).toEqual(["211", "210"]);
+    expect(calls).toEqual([["zzz", "info", 20], ["gs", "notice", 20], ["sr", "info", 5]]);
+  } finally {
+    await service.dispose();
+  }
+});
 
 const serverPath = Bun.which("valkey-server");
 const cliPath = Bun.which("valkey-cli");

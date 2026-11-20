@@ -1,5 +1,5 @@
 import { Job } from "node-schedule";
-import type { NoticeReply } from "./content.ts";
+import type { NoticeReply, NoticeSegment } from "./content.ts";
 import { noticeAccounts, noticeAdapter, type NoticeAccount, type NoticeDeliveryHost } from "./delivery.ts";
 import { numberId, type AnnouncementConfig, type AnnouncementTarget } from "./mys-announcement-config.ts";
 import { announcementGames, createAnnouncementSource, type AnnouncementGame, type AnnouncementKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
@@ -78,14 +78,33 @@ interface AnnouncementDestination {
   botIds: number[];
 }
 
+type PresentArticle = (
+  game: AnnouncementGame, id: string, url: string, signal: AbortSignal,
+) => Promise<{ readonly title: string; readonly pictures: readonly NoticeSegment[] } | undefined>;
+
 export function createOfficialAnnouncements(
   getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, config: AnnouncementConfig, signal?: AbortSignal,
-  feed = createAnnouncementSource(), now = Date.now, whenActive?: (start: () => void) => () => void,
+  feed = createAnnouncementSource(), now = Date.now, whenActive?: (start: () => void) => () => void, presentArticle?: PresentArticle,
 ) {
   const lifecycle = new AbortController();
   const active = signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal;
   let pending: ReturnType<typeof poll> | undefined;
   const timer = new Job(() => { void run()?.catch(() => console.warn("[notice] 米游社公告推送失败。")); });
+
+  async function present(game: AnnouncementGame, post: OfficialAnnouncement, kind: AnnouncementKind, push = false): Promise<NoticeReply> {
+    const url = link(game, post.id);
+    if (!presentArticle || active.aborted) return message(game, post, kind);
+    try {
+      const article = await presentArticle(game, post.id, url, active);
+      if (article?.pictures.length) {
+        const title = `${announcementGames[game].name}${labels[kind]}${push ? "推送" : ""}：${article.title}`;
+        return [{ type: "text", text: `${title}\n${url}` }, ...article.pictures];
+      }
+    } catch {
+      // 详情或图片服务暂不可用时，保留列表摘要和原文链接。
+    }
+    return message(game, post, kind);
+  }
 
   async function poll(selected: readonly AnnouncementGame[], channels: readonly AnnouncementKind[]) {
     const report = { confirmed: 0, rejected: 0, unknown: 0, skipped: 0, failed: 0 };
@@ -133,6 +152,7 @@ export function createOfficialAnnouncements(
         const counts = new Map<number, number>();
         for (const { post, kind, destinations } of entries.sort((a,b) => a.post.id.localeCompare(b.post.id))) {
           if (post.created < wall - 7_200 || post.created > wall || config.ban[game]?.test(post.title)) continue;
+          let presentation: NoticeReply | undefined;
           for (const { groupId, account, botIds } of destinations) {
             if (active.aborted) return report;
             const count = counts.get(groupId) ?? 0;
@@ -146,6 +166,7 @@ export function createOfficialAnnouncements(
               keys: [key, keyFor(game, kind), legacy, ...botIds.filter((id) => id !== botId).map((id) => legacyReceipt(game, id, groupId, post.id))],
               arguments: [token, keyForTarget({ botId, groupId })],
             }) !== 1) { report.skipped++; continue; }
+            if (!active.aborted) presentation ??= await present(game, post, kind, true);
             if (active.aborted) {
               await redis.eval(settle, { keys: [key, legacy], arguments: [token, ""] });
               return report;
@@ -153,7 +174,7 @@ export function createOfficialAnnouncements(
             counts.set(groupId, count + 1);
             let state: string;
             try {
-              const id = await account.sendGroup(groupId, message(game, post, kind), active);
+              const id = await account.sendGroup(groupId, presentation ?? message(game, post, kind), active);
               if (!Number.isSafeInteger(id) || (account.adapter === "milky" && id < 0)) throw new Error();
               state = JSON.stringify({ state: "confirmed", ...sender, messageId: id });
               report.confirmed++;
@@ -258,18 +279,48 @@ export function createOfficialAnnouncements(
       };
       commands[`#${name}推送${label}`] = push;
       if (game === "gs" && kind === "info") commands["#推送资讯"] = push;
-    }
 
-    commands[`#${name}公告`] = async (argument) => {
-      if (argument.trim()) return `用法：#${name}公告`;
-      try {
-        const posts = await feed(game, active);
-        const latest = posts.at(-1);
-        return latest ? message(game, latest) : `暂无${name}公告。`;
-      } catch {
-        return "米游社公告暂不可用。";
+      async function query(argument: string, fixedPage?: number): Promise<NoticeReply> {
+        const input = argument.trim();
+        const page = fixedPage ?? (input ? Number(input) : 1);
+        if ((fixedPage !== undefined && input) || (fixedPage === undefined && input && !/^[1-9]\d*$/u.test(input)) ||
+          !Number.isInteger(page) || page < 1 || page > 20) {
+          return `用法 #${name}${label} [1-20]`;
+        }
+        try {
+          const posts = await feed(game, active, kind, 20);
+          const post = posts[page - 1];
+          if (!posts.length) return `暂无${name}${label}。`;
+          return post ? await present(game, post, kind) : `仅有 ${posts.length} 条${name}${label}，请输入 1-${posts.length}。`;
+        } catch {
+          return `米游社${label}暂不可用。`;
+        }
       }
-    };
+      async function list(argument: string): Promise<NoticeReply> {
+        if (argument.trim()) return `用法 #${name}${label}列表`;
+        try {
+          const posts = (await feed(game, active, kind, 5)).slice(0, 5);
+          if (!posts.length) return `暂无${name}${label}。`;
+          return [`${name}${label}列表`, ...posts.flatMap((post, index) => [
+            `${index + 1}. ${post.title}`, link(game, post.id),
+          ])].join("\n");
+        } catch {
+          return `米游社${label}暂不可用。`;
+        }
+      }
+      const canonical = `${name}${label}`;
+      commands[`#${canonical}`] = (argument) => query(argument);
+      commands[`#${canonical}列表`] = list;
+      for (let page = 1; page <= 20; page++) commands[`#${canonical}${page}`] = (argument) => query(argument, page);
+      for (const spelling of game === "gs" ? [name, "官方", ""] : [name]) {
+        const short = `${spelling}${label}`;
+        if (short !== canonical) {
+          if (short !== "公告") aliases[`#${short}`] = `#${canonical}`;
+          aliases[`#${short}列表`] = `#${canonical}列表`;
+          for (let page = 1; page <= 20; page++) aliases[`#${short}${page}`] = `#${canonical}${page}`;
+        }
+      }
+    }
   }
   return { commands, aliases, run, dispose };
 }
