@@ -1,6 +1,6 @@
 import { Job } from "node-schedule";
 import type { NoticeReply } from "./content.ts";
-import type { NoticeDeliveryHost } from "./delivery.ts";
+import { noticeAccounts, noticeAdapter, type NoticeAccount, type NoticeDeliveryHost } from "./delivery.ts";
 import { numberId, type AnnouncementConfig, type AnnouncementTarget } from "./mys-announcement-config.ts";
 import { announcementGames, createAnnouncementSource, type AnnouncementGame, type OfficialAnnouncement } from "./mys-announcement-source.ts";
 import type { NoticeRedis } from "./store.ts";
@@ -66,7 +66,7 @@ async function targetsFor(redis: NoticeRedis, game: AnnouncementGame, config: An
 
 export function createOfficialAnnouncements(
   getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, config: AnnouncementConfig, signal?: AbortSignal,
-  feed = createAnnouncementSource(), now = Date.now,
+  feed = createAnnouncementSource(), now = Date.now, whenActive?: (start: () => void) => () => void,
 ) {
   const lifecycle = new AbortController();
   const active = signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal;
@@ -77,7 +77,7 @@ export function createOfficialAnnouncements(
     const report = { confirmed: 0, rejected: 0, unknown: 0, skipped: 0, failed: 0 };
     const redis = getRedis();
     if (!redis || active.aborted || config.maxNum === 0) return report;
-    const online = new Set(host.onlineBots());
+    const online = new Map(noticeAccounts(host).map((account) => [account.botId, account]));
     const groupLists = new Map<number, ReadonlySet<number>>();
     const wall = Math.floor(now() / 1000);
     for (const game of selected) {
@@ -90,15 +90,16 @@ export function createOfficialAnnouncements(
           group.push(botId);
           groups.set(groupId, group);
         }
-        const destinations: { groupId: number; botId: number; botIds: number[]; sent: number }[] = [];
+        const destinations: { groupId: number; account: NoticeAccount; botIds: number[]; sent: number }[] = [];
         for (const [groupId, botIds] of groups) {
           if (active.aborted) return report;
           for (const botId of botIds.sort((a, b) => a - b)) {
-            if (!online.has(botId)) continue;
+            const account = online.get(botId);
+            if (!account) continue;
             let allowed = groupLists.get(botId);
             if (!allowed) {
               try {
-                allowed = new Set((await host.listGroups(botId)).map(({ id }) => id));
+                allowed = new Set((await account.listGroups(active)).map(({ id }) => id));
               } catch {
                 report.failed++;
                 allowed = new Set();
@@ -106,7 +107,7 @@ export function createOfficialAnnouncements(
               groupLists.set(botId, allowed);
             }
             if (!allowed.has(groupId)) continue;
-            destinations.push({ groupId, botId, botIds, sent: 0 });
+            destinations.push({ groupId, account, botIds, sent: 0 });
             break;
           }
         }
@@ -117,13 +118,15 @@ export function createOfficialAnnouncements(
           for (const target of destinations) {
             if (active.aborted) return report;
             if (target.sent >= config.maxNum) continue;
-            const { groupId, botId, botIds } = target;
+            const { groupId, account, botIds } = target;
+            const { botId } = account;
+            const sender = { botId, ...noticeAdapter(account) };
             const key = `lotus-yunzai:notice:mys:${game}:delivery:${groupId}:${post.id}`;
             const legacy = legacyReceipt(game, botId, groupId, post.id);
-            const token = JSON.stringify({ state: "pending", token: crypto.randomUUID(), botId });
+            const token = JSON.stringify({ state: "pending", token: crypto.randomUUID(), ...sender });
             if (await redis.eval(claim, {
               keys: [key, keyFor(game), legacy, ...botIds.filter((id) => id !== botId).map((id) => legacyReceipt(game, id, groupId, post.id))],
-              arguments: [token, keyForTarget(target)],
+              arguments: [token, keyForTarget({ botId, groupId })],
             }) !== 1) { report.skipped++; continue; }
             if (active.aborted) {
               await redis.eval(settle, { keys: [key, legacy], arguments: [token, ""] });
@@ -132,16 +135,16 @@ export function createOfficialAnnouncements(
             target.sent++;
             let state: string;
             try {
-              const id = await host.sendGroup(botId, groupId, message(game, post));
-              if (!Number.isSafeInteger(id)) throw new Error();
-              state = JSON.stringify({ state: "confirmed", botId, messageId: id });
+              const id = await account.sendGroup(groupId, message(game, post), active);
+              if (!Number.isSafeInteger(id) || (account.adapter === "milky" && id < 0)) throw new Error();
+              state = JSON.stringify({ state: "confirmed", ...sender, messageId: id });
               report.confirmed++;
             } catch (error) {
               if (notSent(error)) {
                 state = "";
                 report.rejected++;
               } else {
-                state = JSON.stringify({ state: "unknown", botId });
+                state = JSON.stringify({ state: "unknown", ...sender });
                 report.unknown++;
               }
             }
@@ -163,16 +166,32 @@ export function createOfficialAnnouncements(
 
   async function dispose() {
     lifecycle.abort();
+    cancelActivation?.();
     timer.cancel();
     active.removeEventListener("abort", cancel);
     await pending;
   }
 
+  function startTimer() {
+    if (getRedis() && !active.aborted && !timer.schedule(config.cron)) throw new Error("米游社公告推送 cron 无效。");
+  }
+
   function cancel() { timer.cancel(); }
   active.addEventListener("abort", cancel, { once: true });
-  if (getRedis() && !active.aborted && !timer.schedule(config.cron)) {
-    void dispose();
-    throw new Error("米游社公告推送 cron 无效。");
+  const cancelActivation = whenActive?.(() => {
+    try {
+      startTimer();
+    } catch {
+      console.warn("[notice] 米游社公告推送 cron 无效。");
+    }
+  });
+  if (!whenActive) {
+    try {
+      startTimer();
+    } catch (error) {
+      void dispose();
+      throw error;
+    }
   }
 
   const commands: Record<string, (argument: string, context: Context) => Promise<NoticeReply>> = {};
@@ -187,7 +206,7 @@ export function createOfficialAnnouncements(
         }
         const botId = numberId(context.self_id);
         const groupId = numberId(context.group_id);
-        if (!botId || !groupId || !host.onlineBots().includes(botId)) return "无法确认当前机器人和群聊。";
+        if (!botId || !groupId || !noticeAccounts(host).some((account) => account.botId === botId)) return "无法确认当前机器人和群聊。";
         const redis = getRedis();
         if (!redis) return "公告存储未连接。";
         try {

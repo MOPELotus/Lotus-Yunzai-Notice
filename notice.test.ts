@@ -865,15 +865,20 @@ test.skipIf(!available)("旧 cron 实际触发米游社订阅，只从当前在�
   const config = parseAnnouncementConfig("pushTime: '*/1 * * * * *'\nzzzannounceGroup: { '80': [90] }");
   const sent = Promise.withResolvers<NoticeReply>();
   const host: NoticeDeliveryHost = {
-    onlineBots: () => [80],
-    async listGroups() { return [{ id: 90 }, { id: 91 }]; },
-    async sendGroup(bot, group, body) {
-      expect([bot, group]).toEqual([80, 90]);
-      expect(await exec("GET", "Yz:zzz:mys:newPush:80:90:1010")).not.toBeNull();
-      sent.resolve(body);
-      return -70;
-    },
+    onlineBots: () => [],
+    async listGroups() { throw new Error("不能使用旧群列表"); },
+    async sendGroup() { throw new Error("不能使用旧发送入口"); },
     async deleteMessage() {},
+    noticeAccounts: () => [{
+      botId: 80, adapter: "milky",
+      async listGroups() { return [{ id: 90 }, { id: 91 }]; },
+      async sendGroup(group, body) {
+        expect(group).toBe(90);
+        expect(await exec("GET", "Yz:zzz:mys:newPush:80:90:1010")).not.toBeNull();
+        sent.resolve(body);
+        return 70;
+      },
+    }],
   };
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const service = createOfficialAnnouncements(() => redis, host, config, undefined, async (game) => {
@@ -888,4 +893,118 @@ test.skipIf(!available)("旧 cron 实际触发米游社订阅，只从当前在�
     await service.dispose();
   }
   expect(await exec("GET", "Yz:zzz:mys:newPush:80:90:1010")).toBe("1");
+  expect(JSON.parse(await exec("GET", "lotus-yunzai:notice:mys:zzz:delivery:90:1010") as string))
+    .toEqual({ state: "confirmed", botId: 80, adapter: "milky", messageId: 70 });
+});
+
+test.skipIf(!available)("公告会话快照优先同号 OneBot，Milky 回执绑定原协议和群", async () => {
+  const client = redis!;
+  const noticeId = (await createNoticeStore(client).publish("通知", "20001"))!;
+  await exec("SADD", "notice:whitelist", "10001", "10002", "10003");
+  const attempts: string[] = [];
+  const recalls: unknown[][] = [];
+  const signal = new AbortController().signal;
+  let accounts: ReturnType<NonNullable<NoticeDeliveryHost["noticeAccounts"]>>;
+  const oneBot = {
+    botId: 20001, adapter: "onebot" as const,
+    async listGroups(received?: AbortSignal) { expect(received).toBe(signal); return [{ id: 10001 }]; },
+    async sendGroup(group: number) { attempts.push(`onebot:${group}`); return -15; },
+  };
+  const nextOneBot = {
+    ...oneBot, botId: 20002,
+    async listGroups() { return [{ id: 10002 }, { id: 10003 }]; },
+  };
+  accounts = [
+    { ...oneBot, adapter: "milky", async listGroups() { throw new Error("同号 Milky 不应查询"); } },
+    oneBot,
+    {
+      botId: 20002, adapter: "milky",
+      async listGroups(received) {
+        expect(received).toBe(signal);
+        accounts = [oneBot, nextOneBot];
+        return [{ id: 10001 }, { id: 10002 }, { id: 10003 }];
+      },
+      async sendGroup(group, message, received) {
+        expect(received).toBe(signal);
+        expect(message).toContain("通知");
+        attempts.push(`milky:${group}`);
+        if (group === 10003) throw new Error("发出后断开");
+        return 15;
+      },
+    },
+  ];
+  const host: NoticeDeliveryHost = {
+    onlineBots() { throw new Error("应使用快照账号"); },
+    async listGroups() { throw new Error("应使用快照成员查询"); },
+    async sendGroup() { throw new Error("应使用快照发送"); },
+    async deleteMessage() { throw new Error("应使用明确的适配器撤回"); },
+    noticeAccounts: () => accounts,
+    async recallGroupMessage(...args) { recalls.push(args); },
+  };
+  const delivery = createNoticeDelivery(client, host, async () => {});
+  expect(await delivery.push(signal)).toMatchObject({ selected: 3, receipts: [
+    { botId: 20001, groupId: 10001, state: "confirmed", messageId: -15 },
+    { adapter: "milky", botId: 20002, groupId: 10002, state: "confirmed", messageId: 15 },
+    { adapter: "milky", botId: 20002, groupId: 10003, state: "unknown" },
+  ] });
+  expect(attempts).toEqual(["onebot:10001", "milky:10002", "milky:10003"]);
+  const readStored = async (group: number) =>
+    JSON.parse(await exec("HGET", `notice:delivery:${noticeId}`, String(group)) as string);
+  expect(await readStored(10001)).toEqual({ botId: 20001, groupId: 10001, state: "confirmed", messageId: -15 });
+  const milkyConfirmed = await readStored(10002);
+  expect(milkyConfirmed).toEqual({
+    adapter: "milky", botId: 20002, groupId: 10002, state: "unknown", milkyState: "confirmed", messageId: 15,
+  });
+  expect(await readStored(10003)).toEqual({ adapter: "milky", botId: 20002, groupId: 10003, state: "unknown" });
+  // The legacy recall filter and Redis claim script inspect only `state`.
+  expect(milkyConfirmed.state === "confirmed" && Number.isSafeInteger(milkyConfirmed.messageId)).toBe(false);
+  expect(milkyConfirmed.state === "not-sent").toBe(false);
+  expect(await delivery.push(signal)).toMatchObject({ alreadyClaimed: 3, receipts: [] });
+  expect(attempts).toHaveLength(3);
+  expect(await delivery.recall({ noticeId, signal })).toMatchObject({ selected: 2 });
+  expect(recalls).toEqual([
+    ["onebot", 20001, 10001, -15, signal], ["milky", 20002, 10002, 15, signal],
+  ]);
+  expect(await readStored(10002)).toEqual({ ...milkyConfirmed, recall: "confirmed" });
+  const reopened = createNoticeDelivery(client, host, async () => {});
+  expect((await reopened.receipts(noticeId))?.receipts[1]).toEqual({
+    adapter: "milky", botId: 20002, groupId: 10002, state: "confirmed", messageId: 15, recall: "confirmed",
+  });
+  expect(await reopened.recall({ noticeId, signal })).toMatchObject({ selected: 2, alreadyClaimed: 2 });
+  expect(recalls).toHaveLength(2);
+});
+
+test.skipIf(!available)("未激活的公告模块保留同步命令，销毁时取消两种待启动日程", async () => {
+  const file = join(temp!, "held-notice.yaml");
+  await writeFile(file, "enableSchedule: true\nscheduleTime: '0:00-23:59'\n");
+  const previous = Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG;
+  const callbacks = new Set<() => void>();
+  const oldHost: NoticeDeliveryHost = {
+    onlineBots: () => [],
+    async listGroups() { return []; },
+    async sendGroup() { throw new Error("不应调用旧路径"); },
+    async deleteMessage() {},
+  };
+  try {
+    Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG = file;
+    const module = createModule({
+      groups: oldHost,
+      noticeGroups: { ...oldHost, noticeAccounts() { return []; } },
+      whenNoticeActive(start) {
+        callbacks.add(start);
+        return () => { callbacks.delete(start); };
+      },
+    });
+    expect(callbacks.size).toBe(2);
+    expect(typeof (module.commands as Record<string, unknown>)["#星铁推送公告"]).toBe("function");
+    try {
+      expect(await exec("KEYS", "notice:schedule:*")).toEqual([]);
+    } finally {
+      await module.dispose?.();
+    }
+    expect(callbacks.size).toBe(0);
+  } finally {
+    if (previous === undefined) delete Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG;
+    else Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG = previous;
+  }
 });

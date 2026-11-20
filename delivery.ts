@@ -3,14 +3,26 @@ import { decorateNotice, type NoticeReply } from "./content.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
 
-export interface NoticeDeliveryHost {
-  onlineBots(): readonly number[];
-  listGroups(botId: number): Promise<readonly { id: number; name?: string }[]>;
-  sendGroup(botId: number, groupId: number, content: NoticeReply): Promise<number>;
-  deleteMessage(botId: number, messageId: number): Promise<void>;
+type NoticeAdapter = "onebot" | "milky";
+type GroupMembership = readonly { id: number; name?: string }[];
+
+export interface NoticeAccount {
+  readonly botId: number;
+  readonly adapter: NoticeAdapter;
+  listGroups(signal?: AbortSignal): Promise<GroupMembership>;
+  sendGroup(groupId: number, content: NoticeReply, signal?: AbortSignal): Promise<number>;
 }
 
-type Destination = { botId: number; groupId: number };
+export interface NoticeDeliveryHost {
+  onlineBots(): readonly number[];
+  listGroups(botId: number): Promise<GroupMembership>;
+  sendGroup(botId: number, groupId: number, content: NoticeReply): Promise<number>;
+  deleteMessage(botId: number, messageId: number): Promise<void>;
+  noticeAccounts?(): readonly NoticeAccount[];
+  recallGroupMessage?(adapter: NoticeAdapter, botId: number, groupId: number, messageId: number, signal?: AbortSignal): Promise<void>;
+}
+
+type Destination = { botId: number; groupId: number; adapter?: "milky" };
 type DeliveryState = "pending" | "confirmed" | "not-sent" | "unknown";
 type RecallState = DeliveryState;
 export type DeliveryReceipt = Destination & (
@@ -43,6 +55,27 @@ const receiptKey = (noticeId: string) => `notice:delivery:${noticeId}`;
 const noticeKey = (noticeId: string) => `notice:ann:${noticeId}`;
 const id = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+export function noticeAccounts(host: NoticeDeliveryHost): readonly NoticeAccount[] {
+  if (!host.noticeAccounts) {
+    return [...new Set(host.onlineBots().filter(id))].map((botId) => ({
+      botId, adapter: "onebot",
+      listGroups: () => host.listGroups(botId),
+      sendGroup: (groupId, content) => host.sendGroup(botId, groupId, content),
+    }));
+  }
+  const selected = new Map<number, NoticeAccount>();
+  for (const account of host.noticeAccounts()) {
+    if (!id(account.botId) || (account.adapter !== "milky" && account.adapter !== "onebot")) continue;
+    const current = selected.get(account.botId);
+    if (!current || (current.adapter === "milky" && account.adapter === "onebot")) selected.set(account.botId, account);
+  }
+  return [...selected.values()];
+}
+
+export function noticeAdapter(account: NoticeAccount): { adapter?: "milky" } {
+  return account.adapter === "milky" ? { adapter: "milky" } : {};
+}
 
 const claimGroup = `
 local previous = redis.call('HGET', KEYS[1], ARGV[1])
@@ -87,28 +120,38 @@ function recallState(value: unknown): value is RecallState {
   return value === "pending" || value === "confirmed" || value === "not-sent" || value === "unknown";
 }
 
+function writeReceipt(receipt: DeliveryReceipt & { recallAttempt?: string }): string {
+  if (receipt.adapter === "milky" && receipt.state === "confirmed") {
+    // Older versions only read state and must never send a Milky sequence to OneBot.
+    return JSON.stringify({ ...receipt, state: "unknown", milkyState: "confirmed" });
+  }
+  return JSON.stringify(receipt);
+}
+
 function readReceipt(group: string, raw: string): DeliveryReceipt {
-  const { botId, groupId, state, messageId, recall } = JSON.parse(raw) as {
-    botId: unknown; groupId: unknown; state: unknown; messageId?: unknown; recall?: unknown;
+  const { botId, groupId, adapter, state: storedState, milkyState, messageId, recall } = JSON.parse(raw) as {
+    botId: unknown; groupId: unknown; adapter?: unknown; state: unknown; milkyState?: unknown; messageId?: unknown; recall?: unknown;
   };
-  if (id(botId) && id(groupId) && String(groupId) === group) {
-    if (state === "confirmed" && typeof messageId === "number" && Number.isSafeInteger(messageId)) {
-      if (recall === undefined) return { botId, groupId, state, messageId };
-      if (recallState(recall)) return { botId, groupId, state, messageId, recall };
+  const state = adapter === "milky" && storedState === "unknown" && milkyState === "confirmed" ? "confirmed" : storedState;
+  if (id(botId) && id(groupId) && String(groupId) === group && (adapter === undefined || adapter === "onebot" || adapter === "milky")) {
+    const destination: Destination = { botId, groupId, ...(adapter === "milky" ? { adapter } : {}) };
+    if (state === "confirmed" && typeof messageId === "number" && Number.isSafeInteger(messageId) && (adapter !== "milky" || messageId >= 0)) {
+      if (recall === undefined) return { ...destination, state, messageId };
+      if (recallState(recall)) return { ...destination, state, messageId, recall };
       throw new Error("公告撤回回执格式无效");
     }
     if (state === "pending" || state === "not-sent" || state === "unknown") {
-      return { botId, groupId, state };
+      return { ...destination, state };
     }
   }
   throw new Error("公告投递回执格式无效");
 }
 
-async function send(host: NoticeDeliveryHost, notice: Notice, target: Destination): Promise<DeliveryReceipt> {
+async function send(account: NoticeAccount, notice: Notice, target: Destination, signal?: AbortSignal): Promise<DeliveryReceipt> {
   const content = decorateNotice(notice.content, notice.segments, "【公告通知】\n", `\n${notice.timestamp}`);
   try {
-    const messageId = await host.sendGroup(target.botId, target.groupId, content);
-    return Number.isSafeInteger(messageId)
+    const messageId = await account.sendGroup(target.groupId, content, signal);
+    return Number.isSafeInteger(messageId) && (account.adapter !== "milky" || messageId >= 0)
       ? { ...target, state: "confirmed", messageId }
       : { ...target, state: "unknown" };
   } catch (error) {
@@ -143,19 +186,20 @@ export function createNoticeDelivery(
       const notice = scheduled ?? await notices.current();
       if (!notice) return result;
       result.noticeId = notice.id;
-      const destinations = new Map<number, Destination & { interval: number }>();
-      for (const botId of new Set(host.onlineBots().filter(id))) {
+      const destinations = new Map<number, { groupId: number; interval: number; account: NoticeAccount }>();
+      for (const account of noticeAccounts(host)) {
+        const { botId } = account;
         if (signal?.aborted) return { ...result, stopped: "cancelled" };
         try {
           const settings = await targets.settings(String(botId));
           if (signal?.aborted) return { ...result, stopped: "cancelled" };
           if (!settings.account?.enabled) continue;
-          const groups = await host.listGroups(botId);
+          const groups = await account.listGroups(signal);
           if (signal?.aborted) return { ...result, stopped: "cancelled" };
           for (const selected of selectNoticeGroups(settings, groups.map((group) => group.id).filter(id))) {
             const groupId = Number(selected);
             if (!destinations.has(groupId)) {
-              destinations.set(groupId, { botId, groupId, interval: settings.account.pushInterval ?? defaultInterval });
+              destinations.set(groupId, { account, groupId, interval: settings.account.pushInterval ?? defaultInterval });
             }
           }
         } catch {
@@ -165,7 +209,9 @@ export function createNoticeDelivery(
       result.selected = destinations.size;
 
       const lastSend = new Map<number, number>();
-      for (const { botId, groupId, interval } of destinations.values()) {
+      for (const { account, groupId, interval } of destinations.values()) {
+        const { botId } = account;
+        const destination = { botId, groupId, ...noticeAdapter(account) };
         if (signal?.aborted) return { ...result, stopped: "cancelled" };
         const gap = lastSend.get(botId);
         if (gap !== undefined) {
@@ -180,7 +226,7 @@ export function createNoticeDelivery(
         }
         if (signal?.aborted) return { ...result, stopped: "cancelled" };
 
-        const pending = JSON.stringify({ botId, groupId, state: "pending", attempt: crypto.randomUUID() });
+        const pending = JSON.stringify({ ...destination, state: "pending", attempt: crypto.randomUUID() });
         try {
           const claim = await redis.eval(claimGroup, {
             keys: [receiptKey(notice.id), currentKey, noticeKey(notice.id)],
@@ -194,11 +240,11 @@ export function createNoticeDelivery(
           if (claim !== 1) return { ...result, stopped: "storage-error" };
 
           const receipt = signal?.aborted
-            ? { botId, groupId, state: "not-sent" as const }
-            : await send(host, notice, { botId, groupId });
+            ? { ...destination, state: "not-sent" as const }
+            : await send(account, notice, destination, signal);
           const saved = await redis.eval(finishGroup, {
             keys: [receiptKey(notice.id), noticeKey(notice.id)],
-            arguments: [String(groupId), pending, JSON.stringify(receipt), receipt.state],
+            arguments: [String(groupId), pending, writeReceipt(receipt), receipt.state],
           });
           if (saved !== 1) return { ...result, stopped: "storage-error" };
           result.receipts.push(receipt);
@@ -232,7 +278,7 @@ export function createNoticeDelivery(
 
         const key = receiptKey(resolved);
         const group = String(receipt.groupId);
-        const pending = JSON.stringify({ ...receipt, recall: "pending", recallAttempt: crypto.randomUUID() });
+        const pending = writeReceipt({ ...receipt, recall: "pending", recallAttempt: crypto.randomUUID() });
         try {
           const claim = await redis.eval(replaceReceipt, {
             keys: [key], arguments: [group, raw, pending],
@@ -246,15 +292,21 @@ export function createNoticeDelivery(
           let recall: RecallState = "not-sent";
           if (!signal?.aborted) {
             try {
-              await host.deleteMessage(receipt.botId, receipt.messageId);
-              recall = "confirmed";
+              const adapter = receipt.adapter ?? "onebot";
+              if (host.recallGroupMessage) {
+                await host.recallGroupMessage(adapter, receipt.botId, receipt.groupId, receipt.messageId, signal);
+                recall = "confirmed";
+              } else if (adapter === "onebot") {
+                await host.deleteMessage(receipt.botId, receipt.messageId);
+                recall = "confirmed";
+              }
             } catch (error) {
               recall = unconfirmed(error);
             }
           }
           const updated = { ...receipt, recall };
           const saved = await redis.eval(replaceReceipt, {
-            keys: [key], arguments: [group, pending, JSON.stringify(updated)],
+            keys: [key], arguments: [group, pending, writeReceipt(updated)],
           });
           if (saved !== 1) return { ...result, stopped: "storage-error" };
           result.receipts.push(updated);

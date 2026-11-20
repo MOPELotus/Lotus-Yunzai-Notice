@@ -217,19 +217,31 @@ function describeReceipt(receipt: DeliveryReceipt): string {
   }
 }
 
-export function createModule({ groups, signal }: { groups: NoticeDeliveryHost; signal?: AbortSignal }):
+export function createModule({ groups, noticeGroups = groups, signal, whenNoticeActive }: {
+  groups: NoticeDeliveryHost; noticeGroups?: NoticeDeliveryHost; signal?: AbortSignal;
+  whenNoticeActive?: (start: () => void) => () => void;
+}):
   ReturnType<typeof createNoticePlugin> & { dispose?: () => Promise<void> } {
-  const module = createNoticePlugin(hostRedis, groups, signal);
+  const module = createNoticePlugin(hostRedis, noticeGroups, signal);
   const disposers: (() => Promise<void>)[] = [];
   try {
     const window = configuredNoticeSchedule();
-    if (window) disposers.push(startNoticeScheduler(hostRedis, groups, window, signal));
+    if (window) {
+      let stop: (() => Promise<void>) | undefined;
+      let disposed = false;
+      const launch = () => {
+        if (!disposed && !signal?.aborted) stop = startNoticeScheduler(hostRedis, noticeGroups, window, signal);
+      };
+      const cancel = whenNoticeActive?.(launch);
+      if (!whenNoticeActive) launch();
+      disposers.push(async () => { disposed = true; cancel?.(); await stop?.(); });
+    }
   } catch {
     console.warn("[notice] 无法读取公告定时配置，定时推送未启动。");
   }
   try {
     const config = configuredAnnouncements(new URL("../../", import.meta.url));
-    const official = createOfficialAnnouncements(hostRedis, groups, config, signal);
+    const official = createOfficialAnnouncements(hostRedis, noticeGroups, config, signal, undefined, undefined, whenNoticeActive);
     Object.assign(module.commands, official.commands);
     disposers.push(official.dispose);
   } catch {
