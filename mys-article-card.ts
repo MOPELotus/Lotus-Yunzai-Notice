@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import { Canvas, type CanvasRenderingContext2D, type Image } from "skia-canvas";
 import type { NoticeSegment } from "./content.ts";
 import { dateFormat, readImage, sizeFont, text, wrapped } from "./mys-card-draw.ts";
+import { drawStyledLine, styledLines } from "./mys-article-spans.ts";
 import type { OfficialArticle } from "./mys-article-source.ts";
 
 const width = 900;
@@ -103,7 +104,16 @@ export async function renderOfficialArticle(article: OfficialArticle, url: strin
 
   for (const block of article.blocks) {
     if (block.type === "text") {
-      pushText(block.text, block.heading ? 27 : 24, block.heading ? 43 : 38, "#333", block.align, block.heading);
+      const size = block.heading ? 27 : 24;
+      const leading = block.heading ? 43 : 38;
+      if (block.spans) {
+        for (const line of styledLines(metrics, block.spans, width - margin * 2, size, block.heading)) {
+          const x = block.align === "center" ? (width - line.width) / 2 : block.align === "right" ? width - margin - line.width : margin;
+          rows.push({ height: leading, draw: (ctx, at) => drawStyledLine(ctx, line, x, at, size, block.heading) });
+        }
+      } else {
+        pushText(block.text, size, leading, "#333", block.align, block.heading);
+      }
       continue;
     }
     const image = images.get(block.url);

@@ -49,7 +49,7 @@ scheduleTime: "8:00-8:30"
 
 发送 `#原神公告`、`#星铁资讯` 或 `#绝区零公告2` 查询米游社。公告和资讯可按原顺序查询前 20 条，命令后加 `列表` 查看最近 5 条的图卡和原文链接。图卡暂不可用时仍给出可点击的列表。`#公告` 用于本机公告，`#官方公告` 查看原神官方公告。群推送和手动查询均优先展示同一份图文详情，详情暂不可用时保留摘要和原文地址。
 
-米游社图文卡参照 [原公告详情模板](https://github.com/TimeRainStarSky/Yunzai-genshin/tree/0290a17cd42c52671e3130fe4a0a5aa38a64faa4/resources/html/mysNews) 的白底、作者、二维码、标题和正文次序，使用 Skia 绘制。作者头像、配图及原文从米游社公开接口读取。
+米游社图文卡参照 [原公告详情模板](https://github.com/TimeRainStarSky/Yunzai-genshin/tree/0290a17cd42c52671e3130fe4a0a5aa38a64faa4/resources/html/mysNews) 的白底、作者、二维码、标题和正文次序，使用 Skia 绘制。作者头像、配图及原文从米游社公开接口读取。 正文保留原文的内联颜色、加粗和 HTTPS 链接的视觉标示。公开详情主域不可用时尝试同站的公开接口别名。
 
 原神列表可读取旧部署的 `plugins/genshin/resources/html/mysNews-list/蒙德.png` 或迁移至 `data/genshin/resources/html/mysNews-list/蒙德.png`。同游戏授权页眉也可放入 `data/notice/miyoushe/<gs|sr|zzz>/header.png`。缺图时保留原模板的素白页眉。
 

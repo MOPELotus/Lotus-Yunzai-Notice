@@ -8,7 +8,7 @@ import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
 import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
 import { createAnnouncementSource, readAnnouncementFeed, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
-import { readOfficialArticle } from "./mys-article-source.ts";
+import { createArticleSource, readOfficialArticle } from "./mys-article-source.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
 import { readUpcomingExpiry, type ActivityGame } from "./mys-activity-source.ts";
@@ -112,6 +112,37 @@ test("米游社列表保持五条来源次序、原首图与可点击回退", as
   } finally {
     await service.dispose();
   }
+});
+
+test("米游社详情保留内联强调，公开别名仅在接口不可用时接续", async () => {
+  const value = {
+    retcode: 0, data: { post: { post: {
+      post_id: "765", subject: "版块公告", created_at: 1_790_000_000,
+      content: '<p>第一段 <span style="color: rgb(173, 114, 14);"><strong>限定</strong></span> 与 <a href="https://www.miyoushe.com/ys/article/5">站内活动</a></p>' +
+        '<p><span style="color: url(https://fixture.invalid/x)">普通</span><a href="javascript:doNotRun()">链接</a></p>',
+    } } },
+  };
+  const calls: string[] = [];
+  const source = createArticleSource((async (input, init) => {
+    const url = new URL(String(input));
+    calls.push(url.hostname);
+    expect(url.searchParams.get("gids")).toBe("2");
+    expect(url.searchParams.get("post_id")).toBe("765");
+    expect(init?.credentials).toBe("omit");
+    expect(init?.redirect).toBe("error");
+    if (calls.length === 1) return new Response(null, { status: 503 });
+    return Response.json(value);
+  }) as typeof fetch);
+  const result = await source("gs", "765", new AbortController().signal);
+  expect(calls).toEqual(["bbs-api.miyoushe.com", "bbs-api.mihoyo.com"]);
+  expect(result?.blocks[0]).toEqual({
+    type: "text", text: "第一段 限定 与 站内活动", align: "left", heading: false,
+    spans: [
+      { text: "第一段 " }, { text: "限定", bold: true, color: "#ad720e" }, { text: " 与 " },
+      { text: "站内活动", color: "#0066cc", underline: true },
+    ],
+  });
+  expect(result?.blocks[1]).toEqual({ type: "text", text: "普通链接", align: "left", heading: false });
 });
 
 const serverPath = Bun.which("valkey-server");
