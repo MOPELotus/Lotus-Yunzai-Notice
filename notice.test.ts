@@ -151,6 +151,30 @@ test.skipIf(!available)("公告账号管理沿用旧哈希，只处理在线账�
   expect(await command("#公告账号统计")).toContain("1 个账号的群数未计入");
 });
 
+test.skipIf(!available)("公告历史保留完整正文、十条批次和按页查询", async () => {
+  const { commands } = createNoticePlugin(() => redis);
+  expect(await commands["#全部历史公告"]("")).toBe("没有历史公告。");
+  const records = Array.from({ length:23 }, (_,index) => String(10001 + index) + "ABC");
+  const full = "全文，".repeat(75) + "[CQ:at,qq=all] 结尾";
+  const timestamp = "2026-11-20 10:00:00";
+  await exec("RPUSH","notice:history",...records);
+  for (const id of records) await exec("HSET","notice:ann:"+id,"content",full,
+    "creator","42","timestamp",timestamp,"status","已归档");
+  const whole = await commands["#全部历史公告"]("");
+  const page = await commands["#全部历史公告"]("2");
+  const last = await commands["#全部历史公告"]("3");
+  const makeNode = (id:string) => [
+    {type:"text",text:`ID: ${id}\n状态: 已归档\n发布者: 42\n时间: ${timestamp}\n----------\n`},
+    {type:"text",text:full},
+  ] as const;
+  expect(whole).toEqual({type:"forward",batchSize:10,senderName:"历史公告",nodes:records.map(makeNode)});
+  expect(page).toEqual({type:"forward",batchSize:10,senderName:"历史公告",nodes:records.slice(10,20).map(makeNode)});
+  expect(last).toEqual({type:"forward",batchSize:10,senderName:"历史公告",nodes:records.slice(20).map(makeNode)});
+  expect(await commands["#全部历史公告"]("4")).toBe("历史公告共有 3 页，每页十条。");
+  expect(await commands["#全部历史公告"]("0")).toContain("用法");
+  expect(await commands["#全部历史公告"]("2.0")).toContain("用法");
+});
+
 test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和撤回", async () => {
   const { commands } = createNoticePlugin(() => redis);
   const ordinary = { isMaster: false, user_id: 10001 };
@@ -179,15 +203,15 @@ test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和�
   expect(await exec("HGET", `notice:ann:${oldId}`, "status")).toBe("已归档");
   expect(await commands["#历史公告"](oldId)).toContain(content);
   expect(await commands["#历史公告"](oldId)).toContain("状态 已归档\n发布者 10003");
-  expect(await commands["#全部历史公告"]("1")).toContain(oldId);
-  expect(await commands["#全部历史公告"]("1")).not.toContain("99999AAA");
+  expect(JSON.stringify(await commands["#全部历史公告"]("1"))).toContain(oldId);
+  expect(JSON.stringify(await commands["#全部历史公告"]("1"))).not.toContain("99999AAA");
 
   expect(await commands["#编辑公告"]("编辑后的公告", owner)).toBe("公告已更新。");
   expect(await commands["#公告"]()).toContain("编辑后的公告");
   expect(await commands["#撤回公告"]("", owner)).toBe("当前公告已撤回。");
   expect(await commands["#公告"]()).toBe("当前没有公告。");
   expect(await commands["#历史公告"](currentId)).toBe("没有找到对应的历史公告。");
-  expect(await commands["#全部历史公告"]("1")).not.toContain(currentId);
+  expect(JSON.stringify(await commands["#全部历史公告"]("1"))).not.toContain(currentId);
 });
 
 test.skipIf(!available)("沿用旧全局名单和账号配置，筛选真实群列表且并发编辑不丢项", async () => {
@@ -818,7 +842,10 @@ test.skipIf(!available)("发布、读取、推送和编辑按顺序保留公告�
     { type: "text", text: `【历史公告】 ${current.id}\n${current.timestamp}\n状态 已归档\n发布者 20001\n` },
     { type: "image", file: inline },
   ]);
-  expect(await commands["#全部历史公告"]("1")).toContain("[图片]");
+  expect(await commands["#全部历史公告"]("1")).toEqual({ type:"forward", batchSize:10, senderName:"历史公告", nodes:[[
+    { type:"text", text:`ID: ${current.id}\n状态: 已归档\n发布者: 20001\n时间: ${current.timestamp}\n----------\n` },
+    { type:"image", file:inline },
+  ]] });
 
   const plain = (await catalog.current())!;
   expect(await commands["#编辑公告"]("等号 = 逗号 , & []\n尾行", owner)).toBe("公告已更新。");

@@ -16,12 +16,18 @@ interface CommandContext {
 
 type Handler = (argument: string, context: CommandContext) => NoticeReply | Promise<NoticeReply>;
 type Store = ReturnType<typeof createNoticeStore>;
+interface HistoryForward {
+  readonly type: "forward";
+  readonly nodes: readonly NoticeReply[];
+  readonly batchSize: 10;
+  readonly senderName: "历史公告";
+}
 
-const pageSize = 5;
+const historyBatchSize = 10;
 const memberHelp = [
   "#公告 查看当前公告",
   "#历史公告 [编号] 查看历史公告",
-  "#全部历史公告 [页码] 分页查看历史",
+  "#全部历史公告 [页码] 合并转发全文，每页十条",
 ].join("\n");
 const ownerHelp = [
   "#发布公告 <内容>",
@@ -45,6 +51,16 @@ function format(item: Notice, title: string): NoticeReply {
   return decorateNotice(item.content, item.segments, heading.join("\n") + "\n");
 }
 
+function historyNode(item: Notice): NoticeReply {
+  const heading = [`ID: ${item.id}`];
+  if (item.status) heading.push(`状态: ${item.status}`);
+  heading.push(`发布者: ${item.creator}`, `时间: ${item.timestamp}`, "----------");
+  return [
+    { type: "text", text: heading.join("\n") + "\n" },
+    ...(item.segments ?? [{ type: "text", text: item.content } as const]),
+  ];
+}
+
 function owner(handler: Handler): Handler {
   return (argument, context) => context?.isMaster === true ? handler(argument, context) : "仅机器人主人可管理公告。";
 }
@@ -58,7 +74,7 @@ export function createNoticePlugin(
   deliveryHost?: NoticeDeliveryHost,
   signal?: AbortSignal,
 ) {
-  function withStore(handler: (store: Store) => Promise<NoticeReply>): Promise<NoticeReply> | string {
+  function withStore<T extends NoticeReply | HistoryForward>(handler: (store: Store) => Promise<T>): Promise<T | string> | string {
     const redis = getRedis();
     if (!redis) return "公告存储未连接。";
     return handler(createNoticeStore(redis)).catch(() => "公告存储操作失败，请稍后再试。");
@@ -78,22 +94,18 @@ export function createNoticePlugin(
       return notice ? format(notice, "历史公告") : "没有找到对应的历史公告。";
     }),
 
-    "#全部历史公告": (argument: string) => {
-      const page = argument ? Number(argument) : 1;
-      if (!Number.isSafeInteger(page) || page < 1) return "用法：#全部历史公告 [页码]";
+    "#全部历史公告": (argument = "") => {
+      const input = argument.trim();
+      const page = input ? Number(input) : undefined;
+      if (input && (!/^[1-9]\d*$/u.test(input) || !Number.isSafeInteger(page))) return "用法 #全部历史公告 [页码]，每页十条";
       return withStore(async (store) => {
         const history = await store.history();
         if (!history.length) return "没有历史公告。";
-        const pages = Math.ceil(history.length / pageSize);
-        if (page > pages) return `历史公告共有 ${pages} 页。`;
-        return [`【历史公告】第 ${page}/${pages} 页`,
-          ...history.slice((page - 1) * pageSize, page * pageSize).map((item) => {
-            const text = [...item.content];
-            const preview = text.length > 160 ? `${text.slice(0, 160).join("")}…` : item.content;
-            return `【公告】 ${item.id}\n${item.timestamp}\n${preview}`;
-          }),
-          "发送 #历史公告 <编号> 查看全文。",
-        ].join("\n\n");
+        const pages = Math.ceil(history.length / historyBatchSize);
+        if (page !== undefined && page > pages) return `历史公告共有 ${pages} 页，每页十条。`;
+        const selected = page === undefined ? history :
+          history.slice((page - 1) * historyBatchSize, page * historyBatchSize);
+        return { type: "forward", nodes: selected.map(historyNode), batchSize: historyBatchSize, senderName: "历史公告" } as const;
       });
     },
 
@@ -120,7 +132,7 @@ export function createNoticePlugin(
 
     "#撤回公告": owner(() => withStore(async (store) =>
       await store.recall() ? "当前公告已撤回。" : "当前没有可撤回的公告。")),
-  } satisfies Record<string, Handler>;
+  } satisfies Record<string, (argument: string, context: CommandContext) => NoticeReply | HistoryForward | Promise<NoticeReply | HistoryForward>>;
 
   const targetCommands = Object.assign(createTargetCommands(getRedis, deliveryHost), commands);
   if (!deliveryHost) return { commands: targetCommands };
