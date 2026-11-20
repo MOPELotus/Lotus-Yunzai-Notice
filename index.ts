@@ -1,5 +1,6 @@
 import { decorateNotice, parseNoticeInput, type InboundNoticeSegment, type NoticeReply } from "./content.ts";
 import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost } from "./delivery.ts";
+import { createActivityExpiryNotices } from "./mys-activity.ts";
 import { configuredAnnouncements } from "./mys-announcement-config.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { configuredNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
@@ -255,6 +256,9 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
     Object.assign(module.commands, official.commands);
     aliases = official.aliases;
     disposers.push(official.dispose);
+    const expiry = createActivityExpiryNotices(hostRedis, noticeGroups, config, signal, undefined, undefined, whenNoticeActive);
+    Object.assign(module.commands, expiry.commands);
+    disposers.push(expiry.dispose);
   } catch {
     console.warn("[notice] 无法读取米游社公告推送配置。");
   }

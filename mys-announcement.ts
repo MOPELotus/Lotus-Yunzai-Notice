@@ -56,8 +56,12 @@ function notSent(error: unknown): boolean {
 
 async function targetsFor(redis: NoticeRedis, game: AnnouncementGame, kind: AnnouncementKind, config: AnnouncementConfig) {
   const targets = (kind === "notice" ? config.targets : config.infoTargets)[game];
+  return effectiveAnnouncementTargets(redis, targets, keyFor(game, kind));
+}
+
+export async function effectiveAnnouncementTargets(redis: NoticeRedis, targets: readonly AnnouncementTarget[], hashKey: string) {
   const result = new Map(targets.map((target) => [keyForTarget(target), target]));
-  for (const [key, state] of Object.entries(await redis.hGetAll(keyFor(game, kind)))) {
+  for (const [key, state] of Object.entries(await redis.hGetAll(hashKey))) {
     const [bot, group, extra] = key.split(":");
     const botId = numberId(bot);
     const groupId = numberId(group);

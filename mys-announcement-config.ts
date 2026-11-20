@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import type { ActivityGame } from "./mys-activity-source.ts";
 import { announcementGames, type AnnouncementGame } from "./mys-announcement-source.ts";
 
 export interface AnnouncementTarget {
@@ -12,6 +13,7 @@ export interface AnnouncementConfig {
   readonly ban: Readonly<Partial<Record<AnnouncementGame, RegExp>>>;
   readonly targets: Readonly<Record<AnnouncementGame, readonly AnnouncementTarget[]>>;
   readonly infoTargets: Readonly<Record<AnnouncementGame, readonly AnnouncementTarget[]>>;
+  readonly activityTargets: Readonly<Record<ActivityGame, readonly AnnouncementTarget[]>>;
 }
 
 const defaultBan = {
@@ -31,6 +33,19 @@ function mapping(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function configuredTargets(value: unknown): AnnouncementTarget[] {
+  const targets: AnnouncementTarget[] = [];
+  for (const [bot, groups] of Object.entries(mapping(value))) {
+    const botId = numberId(bot);
+    if (!botId || !Array.isArray(groups)) throw new Error("米游社推送目标格式无效。");
+    for (const groupId of new Set(groups.map(numberId))) {
+      if (!groupId) throw new Error("米游社推送群号无效。");
+      targets.push({ botId, groupId });
+    }
+  }
+  return targets;
+}
+
 export function parseAnnouncementConfig(yaml = "{}"): AnnouncementConfig {
   const config = mapping(Bun.YAML.parse(yaml));
   const cron = config.pushTime ?? "0 0/5 * * * ?";
@@ -46,18 +61,18 @@ export function parseAnnouncementConfig(yaml = "{}"): AnnouncementConfig {
   for (const game of Object.keys(announcementGames) as AnnouncementGame[]) {
     const pattern = words[game] ?? defaultBan[game];
     if (typeof pattern === "string" && pattern) ban[game] = new RegExp(pattern, "u");
-    for (const [suffix, destination] of [["announceGroup",targets], ["infoGroup",infoTargets]] as const) {
-      for (const [bot, groups] of Object.entries(mapping(config[`${game}${suffix}`]))) {
-        const botId = numberId(bot);
-        if (!botId || !Array.isArray(groups)) throw new Error("米游社推送目标格式无效。");
-        for (const groupId of new Set(groups.map(numberId))) {
-          if (!groupId) throw new Error("米游社推送群号无效。");
-          destination[game].push({ botId, groupId });
-        }
-      }
+    targets[game] = configuredTargets(config[`${game}announceGroup`]);
+    infoTargets[game] = configuredTargets(config[`${game}infoGroup`]);
+  }
+  const activityTargets: Record<ActivityGame, AnnouncementTarget[]> = { gs: [], sr: [] };
+  for (const game of ["gs", "sr"] as const) {
+    try {
+      activityTargets[game] = configuredTargets(config[`${game}ActivityPush`]);
+    } catch {
+      console.warn(`[notice] 无法读取 ${game === "gs" ? "原神" : "星铁"}活动到期推送目标。`);
     }
   }
-  return { cron, maxNum, ban, targets, infoTargets };
+  return { cron, maxNum, ban, targets, infoTargets, activityTargets };
 }
 
 export function configuredAnnouncements(root: URL): AnnouncementConfig {

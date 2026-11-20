@@ -9,6 +9,8 @@ import { createNoticeStore, type NoticeRedis } from "./store.ts";
 import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
 import { createAnnouncementSource, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
+import { createActivityExpiryNotices } from "./mys-activity.ts";
+import { readUpcomingExpiry, type ActivityGame } from "./mys-activity-source.ts";
 import { createNoticeDelivery, type NoticeDeliveryHost } from "./delivery.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
 import { configuredNoticeSchedule, parseNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
@@ -1092,6 +1094,88 @@ test.skipIf(!available)("旧 cron 实际触发米游社订阅，只从当前在�
     .toEqual({ state: "confirmed", botId: 80, adapter: "milky", messageId: 70 });
 });
 
+test("活动到期读取原游戏列表格式，过滤已过期、两天外和错误分类", () => {
+  const now = Date.parse("2026-11-20T10:00:00+08:00");
+  const gs = {retcode:0,data:{list:[{}, {list:[
+    {title:"有效活动",subtitle:"合成副标题",tag_label:"活动",end_time:"2026-11-22 09:59:59",banner:"https://sdk-webstatic.mihoyo.com/p.png"},
+    {title:"两天后",tag_label:"活动",end_time:"2026-11-22 10:00:00"},
+    {title:"已过期",tag_label:"活动",end_time:"2026-11-19 10:00:00"},
+    {title:"传说任务",tag_label:"活动",end_time:"2026-11-21 10:00:00"},
+    {title:"非活动",tag_label:"说明",end_time:"2026-11-21 10:00:00"},
+  ]}]}};
+  expect(readUpcomingExpiry("gs",gs,now)).toEqual([{title:"有效活动",subtitle:"合成副标题",
+    end:Date.parse("2026-11-22T09:59:59+08:00"),image:"https://sdk-webstatic.mihoyo.com/p.png"}]);
+  const sr = {retcode:0,data:{pic_list:[{type_list:[{list:[
+    {title:"星铁活动",img:"https://untrusted.example/p.png",end_time:"2026-11-20 10:00:01"},
+    {title:"已结束",end_time:"2026-11-20 10:00:00"},
+  ]}]}]}};
+  expect(readUpcomingExpiry("sr",sr,now)).toEqual([{title:"星铁活动",subtitle:"星铁活动",end:now+1000,image:undefined}]);
+  expect(()=>readUpcomingExpiry("sr",gs,now)).toThrow("响应无效");
+});
+
+test.skipIf(!available)("活动到期续用原群队列顺序，结果未知去重，明确未发出才在下轮补", async () => {
+  let wall = Date.parse("2026-11-20T09:59:59+08:00");
+  const finish = Date.parse("2026-11-21T20:00:00+08:00");
+  const config = parseAnnouncementConfig(`
+pushTime: "0 0 10 1 1 *"
+gsActivityPush: { '70': [90,91] }
+srActivityPush: { '70': [91] }
+`);
+  const key = "Yz:apgl:70";
+  const original = JSON.stringify({date:"2026-11-20",GroupList:[91,90]});
+  await exec("SET",key,original,"EX","7200");
+  const ttl = await exec("PEXPIRETIME",key);
+  const calls: ActivityGame[] = [];
+  const messages: [number,NoticeReply][] = [];
+  let listCalls = 0, rejecting = true, start: (() => void) | undefined;
+  const host: NoticeDeliveryHost = {
+    onlineBots:()=>[70],
+    async listGroups() { listCalls++;return [{id:90},{id:91}]; },
+    async sendGroup(_bot,group,body) {
+      messages.push([group,body]);
+      if (String(body).includes("星铁")) throw new Error("未确认");
+      if (rejecting) throw Object.assign(new Error(),{delivery:"not-sent"});
+      return 1001;
+    },
+    async deleteMessage() {},
+  };
+  const source = async (game:ActivityGame) => {
+    calls.push(game);
+    return [{title:`即将结束 ${game}`,subtitle:`标题 ${game}`,end:finish}];
+  };
+  const service = createActivityExpiryNotices(()=>redis,host,config,undefined,source,()=>wall,
+    callback=>{start=callback;return ()=>{start=undefined;};},async()=>{});
+  const group = {isMaster:false,message_type:"group",self_id:70,group_id:90};
+  const admin = {...group,member:{is_admin:true,is_owner:false}};
+  try {
+    await service.run();
+    expect(calls).toEqual([]);
+    start?.();
+    await service.run();
+    expect(listCalls).toBe(0);
+    wall += 2000;
+    await service.run();
+    expect(calls).toEqual(["sr","gs"]);
+    expect(messages.map(([group])=>group)).toEqual([91,91]);
+    expect(String(messages[0]?.[1])).toContain("【星铁活动即将结束通知】");
+    expect(await exec("GET",key)).toBe(original);
+    rejecting = false;
+    await service.run();
+    expect(messages.map(([group])=>group)).toEqual([91,91,91]);
+    expect(await exec("GET",key)).toBe(JSON.stringify({date:"2026-11-20",GroupList:[90]}));
+    expect(await exec("PEXPIRETIME",key)).toBe(ttl);
+    await service.run();
+    expect(messages.map(([group])=>group)).toEqual([91,91,91,90]);
+    expect(await exec("GET",key)).toBe(JSON.stringify({date:"2026-11-20",GroupList:[]}));
+    const previous = calls.length;
+    await service.run();
+    expect(calls).toHaveLength(previous);
+    expect(await service.commands["#原神关闭到期活动预警推送"]!("",group)).toContain("管理员");
+    expect(await service.commands["#原神关闭到期活动预警推送"]!("",admin)).toContain("已关闭");
+    expect(await service.commands["#原神开启到期活动"]!("",admin)).toContain("已开启");
+  } finally { await service.dispose(); }
+});
+
 test.skipIf(!available)("公告会话快照优先同号 OneBot，Milky 回执绑定原协议和群", async () => {
   const client = redis!;
   const noticeId = (await createNoticeStore(client).publish("通知", "20001"))!;
@@ -1169,7 +1253,7 @@ test.skipIf(!available)("公告会话快照优先同号 OneBot，Milky 回执绑
   expect(recalls).toHaveLength(2);
 });
 
-test.skipIf(!available)("未激活的公告模块保留同步命令，销毁时取消两种待启动日程", async () => {
+test.skipIf(!available)("未激活的公告模块保留同步命令，销毁时取消所有待启动日程", async () => {
   const file = join(temp!, "held-notice.yaml");
   await writeFile(file, "enableSchedule: true\nscheduleTime: '0:00-23:59'\n");
   const previous = Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG;
@@ -1190,7 +1274,7 @@ test.skipIf(!available)("未激活的公告模块保留同步命令，销毁时�
         return () => { callbacks.delete(start); };
       },
     });
-    expect(callbacks.size).toBe(2);
+    expect(callbacks.size).toBe(3);
     expect(typeof (module.commands as Record<string, unknown>)["#星铁推送公告"]).toBe("function");
     try {
       expect(await exec("KEYS", "notice:schedule:*")).toEqual([]);
