@@ -8,7 +8,7 @@
     "cheerio": "1.0.0",
     "node-schedule": "2.1.2",
     "qrcode": "1.5.4",
-    "skia-canvas": "3.0.8"
+    "skia-canvas": "4.0.1"
   },
   "lotusYunzai": {
     "entry": "./index.ts"
