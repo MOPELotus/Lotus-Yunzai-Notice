@@ -1,7 +1,7 @@
 import { renderPng } from "@lotus-yunzai/skia";
 import QRCode from "qrcode";
 import { Canvas, type CanvasRenderingContext2D, type Image } from "skia-canvas";
-import type { NoticeSegment } from "./content.ts";
+import type { NoticeDeliverySegment } from "./delivery.ts";
 import { dateFormat, readImage, sizeFont, text, wrapped } from "./mys-card-draw.ts";
 import { drawStyledLine, styledLines } from "./mys-article-spans.ts";
 import type { OfficialArticle } from "./mys-article-source.ts";
@@ -38,7 +38,7 @@ function qr(ctx: CanvasRenderingContext2D, url: string) {
 }
 
 export async function renderOfficialArticle(article: OfficialArticle, url: string, active: AbortSignal,
-  transport: typeof fetch = fetch, onRendered?: (engine: Awaited<ReturnType<typeof renderPng>>["engine"]) => void): Promise<NoticeSegment[]> {
+  transport: typeof fetch = fetch, onRendered?: (engine: Awaited<ReturnType<typeof renderPng>>["engine"]) => void): Promise<NoticeDeliverySegment[]> {
   const signal = AbortSignal.any([active, AbortSignal.timeout(6_000)]);
   const references = [...new Set([article.avatar, ...article.blocks.flatMap((block) => block.type === "image" ? [block.url] : [])]
     .filter((source): source is string => Boolean(source)))].slice(0, maxImages);
@@ -169,7 +169,7 @@ export async function renderOfficialArticle(article: OfficialArticle, url: strin
   if (pages.length > 10) throw new Error("米游社文章过长，请打开原文查看。");
 
   let total = 0;
-  const result: NoticeSegment[] = [];
+  const result: NoticeDeliverySegment[] = [];
   const configured = process.env.LOTUS_SKIA_MODE;
   const mode = configured === "gpu" || configured === "cpu" ? configured : "auto";
   for (const { rows: pageRows, height } of pages) {
@@ -183,7 +183,7 @@ export async function renderOfficialArticle(article: OfficialArticle, url: strin
     onRendered?.(engine);
     total += png.byteLength;
     if (total > maxReplyBytes) throw new Error("米游社文章图片过大，请打开原文查看。");
-    result.push({ type: "image", file: "base64://" + png.toString("base64") });
+    result.push({ type: "image", file: png });
   }
   return result;
 }

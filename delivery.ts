@@ -1,22 +1,24 @@
 import { setTimeout as wait } from "node:timers/promises";
-import { decorateNotice, type NoticeReply } from "./content.ts";
+import { decorateNotice, type NoticeSegment } from "./content.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
 
 type NoticeAdapter = "onebot" | "milky";
 type GroupMembership = readonly { id: number; name?: string }[];
+export type NoticeDeliverySegment = NoticeSegment | { readonly type: "image"; readonly file: Uint8Array };
+export type NoticeDeliveryReply = string | readonly NoticeDeliverySegment[];
 
 export interface NoticeAccount {
   readonly botId: number;
   readonly adapter: NoticeAdapter;
   listGroups(signal?: AbortSignal): Promise<GroupMembership>;
-  sendGroup(groupId: number, content: NoticeReply, signal?: AbortSignal): Promise<number>;
+  sendGroup(groupId: number, content: NoticeDeliveryReply, signal?: AbortSignal): Promise<number>;
 }
 
 export interface NoticeDeliveryHost {
   onlineBots(): readonly number[];
   listGroups(botId: number): Promise<GroupMembership>;
-  sendGroup(botId: number, groupId: number, content: NoticeReply): Promise<number>;
+  sendGroup(botId: number, groupId: number, content: NoticeDeliveryReply): Promise<number>;
   deleteMessage(botId: number, messageId: number): Promise<void>;
   noticeAccounts?(): readonly NoticeAccount[];
   recallGroupMessage?(adapter: NoticeAdapter, botId: number, groupId: number, messageId: number, signal?: AbortSignal): Promise<void>;

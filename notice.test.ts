@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { NoticeReply } from "./content.ts";
 import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
 import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
@@ -14,7 +13,7 @@ import { createArticleSource, readOfficialArticle } from "./mys-article-source.t
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
 import { readUpcomingExpiry, type ActivityGame } from "./mys-activity-source.ts";
-import { createNoticeDelivery, type NoticeDeliveryHost } from "./delivery.ts";
+import { createNoticeDelivery, type NoticeDeliveryHost, type NoticeDeliveryReply } from "./delivery.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
 import { configuredNoticeSchedule, parseNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
 
@@ -47,6 +46,7 @@ test("米游社详情保留官方图文顺序并排除无法信任的内容", ()
 });
 
 test("米游社查询继承详情编号、五条列表、三游戏资讯和摘要兜底", async () => {
+  const card = Uint8Array.of(1, 2);
   const calls: [AnnouncementGame, AnnouncementKind | undefined, number | undefined][] = [];
   const details: string[] = [];
   const host: NoticeDeliveryHost = {
@@ -61,7 +61,7 @@ test("米游社查询继承详情编号、五条列表、三游戏资讯和摘�
       }));
     }, undefined, undefined, async (_game, id) => {
       details.push(id);
-      if (id === "211") return { title: "详情标题", pictures: [{ type: "image", file: "base64://AQI=" }] };
+      if (id === "211") return { title: "详情标题", pictures: [{ type: "image", file: card }] };
     });
   try {
     const context = { isMaster: false };
@@ -70,7 +70,7 @@ test("米游社查询继承详情编号、五条列表、三游戏资讯和摘�
     expect(service.aliases["#公告"]).toBeUndefined();
     expect(await service.commands["#绝区零资讯2"]!("", context)).toEqual([
       { type: "text", text: "绝区零资讯：详情标题\nhttps://www.miyoushe.com/zzz/article/211" },
-      { type: "image", file: "base64://AQI=" },
+      { type: "image", file: card },
     ]);
     expect(await service.commands["#原神公告"]!("1", context)).toContain("摘要");
     const list = await service.commands["#星铁资讯列表"]!("", context);
@@ -85,6 +85,7 @@ test("米游社查询继承详情编号、五条列表、三游戏资讯和摘�
 });
 
 test("米游社列表保持五条来源次序、原首图与可点击回退", async () => {
+  const card = Uint8Array.of(3, 4);
   const raw = Array.from({ length: 6 }, (_, index) => ({ post: {
     post_id: String(355 + index), created_at: 1_790_000_000 + index, subject: `原顺序 ${index + 1}`,
     content: "<p>公示正文</p><br>甲 &amp; 乙<script>丢弃内容</script>",
@@ -102,13 +103,13 @@ test("米游社列表保持五条来源次序、原首图与可点击回退", as
     async () => posts, undefined, undefined, undefined, async (game, kind, selected) => {
       expect([game, kind, selected.length]).toEqual(["sr", "info", 5]);
       if (fail) throw new Error("PNG 暂不可用");
-      return { type: "image", file: "base64://AQI=" };
+      return { type: "image", file: card };
     });
   try {
     const list = service.commands["#星铁资讯列表"]!;
     const text = "星铁资讯列表\n" + posts.map((post, index) =>
       `${index + 1}. ${post.title}\nhttps://www.miyoushe.com/sr/article/${post.id}`).join("\n");
-    expect(await list("", { isMaster: false })).toEqual([{ type: "image", file: "base64://AQI=" }, { type: "text", text }]);
+    expect(await list("", { isMaster: false })).toEqual([{ type: "image", file: card }, { type: "text", text }]);
     fail = true;
     expect(await list("", { isMaster: false })).toBe(text);
   } finally {
@@ -580,7 +581,7 @@ test.skipIf(!available)("并发推送只发一次，公告改动和调用方中�
   const client = redis!;
   const store = createNoticeStore(client);
   await store.publish("初版内容", "20001");
-  const sent: Array<{ groupId: number; content: NoticeReply }> = [];
+  const sent: Array<{ groupId: number; content: NoticeDeliveryReply }> = [];
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const abort = new AbortController();
@@ -1042,7 +1043,7 @@ test.skipIf(!available)("发布、读取、推送和编辑按顺序保留公告�
     { type: "text", text: `【当前公告】 ${current.id}\n${current.timestamp}\n状态 当前\n发布者 20001\n` }, ...body,
   ]);
 
-  const sent: NoticeReply[] = [];
+  const sent: NoticeDeliveryReply[] = [];
   const host: NoticeDeliveryHost = {
     onlineBots: () => [20001],
     listGroups: async () => [{ id: 10001 }],
@@ -1111,7 +1112,7 @@ test.skipIf(!available)("图片替换不改变文字预览时，定时器和投�
   const id = (await store.publish([{ type: "image", file: original }], "20001"))!;
   const scheduled = fakeScheduleClock("2026-11-19T07:59:00+08:00");
   const window = parseNoticeSchedule("scheduleTime: '8:00-8:00'")!;
-  const sent: NoticeReply[] = [];
+  const sent: NoticeDeliveryReply[] = [];
   const host: NoticeDeliveryHost = {
     onlineBots: () => [20001],
     listGroups: async () => [{ id: 10001 }, { id: 10002 }],
@@ -1182,7 +1183,7 @@ gsannounceGroup:
   '71': [90, 91, 92, 93]
 `);
   await exec("SET", "Yz:gs:mys:newPush:71:90:1000", "1", "EX", "36000");
-  const sends: { bot: number; group: number; body: NoticeReply }[] = [];
+  const sends: { bot: number; group: number; body: NoticeDeliveryReply }[] = [];
   let reject = true;
   const host: NoticeDeliveryHost = {
     onlineBots: () => [70, 71],
@@ -1271,7 +1272,7 @@ srinfoGroup: { '70': [91] }
 zzzinfoGroup: { '71': [92] }
 `);
   const calls: [AnnouncementGame, AnnouncementKind][] = [];
-  const sent: [number, NoticeReply][] = [];
+  const sent: [number, NoticeDeliveryReply][] = [];
   const remote = createAnnouncementSource((async input => {
     const url = new URL(input as URL);
     expect(url.searchParams.get("type")).toBe("3");
@@ -1314,7 +1315,7 @@ zzzinfoGroup: { '71': [92] }
 test.skipIf(!available)("旧 cron 实际触发米游社订阅，只从当前在线账号向订阅群发送", async () => {
   const wall = 1_800_000_000;
   const config = parseAnnouncementConfig("pushTime: '*/1 * * * * *'\nzzzannounceGroup: { '80': [90] }");
-  const sent = Promise.withResolvers<NoticeReply>();
+  const sent = Promise.withResolvers<NoticeDeliveryReply>();
   const host: NoticeDeliveryHost = {
     onlineBots: () => [],
     async listGroups() { throw new Error("不能使用旧群列表"); },
@@ -1361,6 +1362,7 @@ gsinfoGroup: { '70': [90] }
     const entered = Promise.withResolvers<void>();
     const released = Promise.withResolvers<void>();
     const attempts: number[] = [];
+    const detailCard = Uint8Array.of(1, 2);
     const host: NoticeDeliveryHost = {
       onlineBots: () => [],
       async listGroups() { throw new Error("测试应走已选协议账号"); },
@@ -1369,14 +1371,19 @@ gsinfoGroup: { '70': [90] }
       noticeAccounts: () => [{
         botId: 70, adapter,
         async listGroups() { return [{ id: 90 }]; },
-        async sendGroup(groupId) { attempts.push(groupId); return 901; },
+        async sendGroup(groupId, content) {
+          if (typeof content === "string" || content[1]?.type !== "image") throw new Error("详情图片未到达投递");
+          expect(content[1].file).toBe(detailCard);
+          attempts.push(groupId);
+          return 901;
+        },
       }],
     };
     const service = createOfficialAnnouncements(() => redis, host, config, undefined,
       async () => [{ id, created: now - 1, title: "图文合成样本" }], () => now * 1000, undefined, async () => {
         entered.resolve();
         await released.promise;
-        return { title: "图文合成样本", pictures: [{ type: "image", file: "base64://AQI=" }] };
+        return { title: "图文合成样本", pictures: [{ type: "image", file: detailCard }] };
       });
     const receipt = `lotus-yunzai:notice:mys:gs:delivery:90:${id}`;
     const legacy = `Yz:gs:mys:newPush:70:90:${id}`;
@@ -1488,7 +1495,7 @@ srActivityPush: { '70': [91] }
   await exec("SET",key,original,"EX","7200");
   const ttl = await exec("PEXPIRETIME",key);
   const calls: ActivityGame[] = [];
-  const messages: [number,NoticeReply][] = [];
+  const messages: [number,NoticeDeliveryReply][] = [];
   let listCalls = 0, rejecting = true, start: (() => void) | undefined;
   const host: NoticeDeliveryHost = {
     onlineBots:()=>[70],

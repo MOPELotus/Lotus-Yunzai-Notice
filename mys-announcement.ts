@@ -1,6 +1,5 @@
 import { Job } from "node-schedule";
-import type { NoticeReply, NoticeSegment } from "./content.ts";
-import { noticeAccounts, noticeAdapter, type NoticeAccount, type NoticeDeliveryHost } from "./delivery.ts";
+import { noticeAccounts, noticeAdapter, type NoticeAccount, type NoticeDeliveryHost, type NoticeDeliveryReply, type NoticeDeliverySegment } from "./delivery.ts";
 import { numberId, type AnnouncementConfig, type AnnouncementTarget } from "./mys-announcement-config.ts";
 import { announcementGames, createAnnouncementSource, type AnnouncementGame, type AnnouncementKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
 import type { NoticeRedis } from "./store.ts";
@@ -51,7 +50,7 @@ function link(game: AnnouncementGame, id: string) {
   return `https://www.miyoushe.com/${announcementGames[game].slug}/article/${id}`;
 }
 
-function message(game: AnnouncementGame, post: OfficialAnnouncement, kind: AnnouncementKind = "notice"): NoticeReply {
+function message(game: AnnouncementGame, post: OfficialAnnouncement, kind: AnnouncementKind = "notice"): NoticeDeliveryReply {
   const body = [`【${announcementGames[game].name}${labels[kind]}】${post.title}`,
     ...(post.summary ? [post.summary] : []), link(game, post.id)].join("\n");
   return post.image ? [{ type: "text", text: body }, { type: "image", file: post.image }] : body;
@@ -87,10 +86,10 @@ interface AnnouncementDestination {
 
 type PresentArticle = (
   game: AnnouncementGame, id: string, url: string, signal: AbortSignal,
-) => Promise<{ readonly title: string; readonly pictures: readonly NoticeSegment[] } | undefined>;
+) => Promise<{ readonly title: string; readonly pictures: readonly NoticeDeliverySegment[] } | undefined>;
 
 type PresentList = (game: AnnouncementGame, kind: AnnouncementKind, posts: readonly OfficialAnnouncement[],
-  signal: AbortSignal) => Promise<NoticeSegment | undefined>;
+  signal: AbortSignal) => Promise<NoticeDeliverySegment | undefined>;
 
 export function createOfficialAnnouncements(
   getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, config: AnnouncementConfig, signal?: AbortSignal,
@@ -101,7 +100,7 @@ export function createOfficialAnnouncements(
   let pending: ReturnType<typeof poll> | undefined;
   const timer = new Job(() => { void run()?.catch(() => console.warn("[notice] 米游社公告推送失败。")); });
 
-  async function present(game: AnnouncementGame, post: OfficialAnnouncement, kind: AnnouncementKind, push = false): Promise<NoticeReply> {
+  async function present(game: AnnouncementGame, post: OfficialAnnouncement, kind: AnnouncementKind, push = false): Promise<NoticeDeliveryReply> {
     const url = link(game, post.id);
     if (!presentArticle || active.aborted) return message(game, post, kind);
     try {
@@ -162,7 +161,7 @@ export function createOfficialAnnouncements(
         const counts = new Map<number, number>();
         for (const { post, kind, destinations } of entries.sort((a,b) => a.post.id.localeCompare(b.post.id))) {
           if (post.created < wall - 7_200 || post.created > wall || config.ban[game]?.test(post.title)) continue;
-          let presentation: NoticeReply | undefined;
+          let presentation: NoticeDeliveryReply | undefined;
           for (const { groupId, account, botIds } of destinations) {
             if (active.aborted) return report;
             const count = counts.get(groupId) ?? 0;
@@ -255,7 +254,7 @@ export function createOfficialAnnouncements(
     }
   }
 
-  const commands: Record<string, (argument: string, context: Context) => Promise<NoticeReply>> = {};
+  const commands: Record<string, (argument: string, context: Context) => Promise<NoticeDeliveryReply>> = {};
   const aliases: Record<string, string> = {};
   for (const game of games) {
     const { name } = announcementGames[game];
@@ -302,7 +301,7 @@ export function createOfficialAnnouncements(
       commands[`#${name}推送${label}`] = push;
       if (game === "gs" && kind === "info") commands["#推送资讯"] = push;
 
-      async function query(argument: string, fixedPage?: number): Promise<NoticeReply> {
+      async function query(argument: string, fixedPage?: number): Promise<NoticeDeliveryReply> {
         const input = argument.trim();
         const page = fixedPage ?? (input ? Number(input) : 1);
         if ((fixedPage !== undefined && input) || (fixedPage === undefined && input && !/^[1-9]\d*$/u.test(input)) ||
@@ -318,7 +317,7 @@ export function createOfficialAnnouncements(
           return `米游社${label}暂不可用。`;
         }
       }
-      async function list(argument: string): Promise<NoticeReply> {
+      async function list(argument: string): Promise<NoticeDeliveryReply> {
         if (argument.trim()) return `用法 #${name}${label}列表`;
         try {
           const posts = (await feed(game, active, kind, 5)).slice(0, 5);

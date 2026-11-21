@@ -4,7 +4,7 @@ import { renderPng } from "@lotus-yunzai/skia";
 import { Canvas, FontLibrary, loadImage, type CanvasRenderingContext2D, type Image } from "skia-canvas";
 import { announcementGames, type AnnouncementGame, type AnnouncementKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
 import { dateFormat, readImage, sizeFont, text, wrapped } from "./mys-card-draw.ts";
-import type { NoticeSegment } from "./content.ts";
+import type { NoticeDeliverySegment } from "./delivery.ts";
 
 const width = 700;
 const left = 30;
@@ -95,7 +95,7 @@ export function createAnnouncementListRenderer(root: URL, transport: typeof fetc
   onRendered?: (engine: Awaited<ReturnType<typeof renderPng>>["engine"]) => void) {
   let listFontReady: Promise<boolean> | undefined;
   return async (game: AnnouncementGame, kind: AnnouncementKind, input: readonly OfficialAnnouncement[],
-    active: AbortSignal): Promise<NoticeSegment | undefined> => {
+    active: AbortSignal): Promise<NoticeDeliverySegment | undefined> => {
     const posts = input.slice(0, 5);
     if (!posts.length) return;
     const imageSignal = AbortSignal.any([active, AbortSignal.timeout(5_000)]);
@@ -158,6 +158,6 @@ export function createAnnouncementListRenderer(root: URL, transport: typeof fetc
       text(ctx, `详情内容使用 ${command} 加上序号查看，如 ${command}2`, width / 2, height - 43, 14, "#7994a7", "center");
     }, mode);
     onRendered?.(rendered.engine);
-    return { type: "image", file: "base64://" + rendered.png.toString("base64") };
+    return { type: "image", file: rendered.png };
   };
 }
