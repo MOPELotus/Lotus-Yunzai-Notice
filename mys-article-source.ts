@@ -129,12 +129,13 @@ function articleBlocks(content: string): ArticleBlock[] {
   return blocks;
 }
 
-export function readOfficialArticle(value: unknown, expectedId: string): OfficialArticle | undefined {
+export function readOfficialArticle(value: unknown, expectedId: string, expectedGame?: AnnouncementGame): OfficialArticle | undefined {
   const response = record(value);
   const detail = record(record(response.data).post);
   const post = record(detail.post);
   if (response.retcode !== 0 || post.post_id !== expectedId || post.is_deleted === true || post.is_deleted === 1 ||
       typeof post.content !== "string" || post.content.length > 500_000) return;
+  if (expectedGame && post.game_id !== undefined && post.game_id !== announcementGames[expectedGame].id) return;
   const title = label(post.subject, 200);
   const created = integer(post.created_at);
   if (!title || !created || created > 253402300799) return;
@@ -170,7 +171,7 @@ export function createArticleSource(transport: typeof fetch = fetch) {
           if (response.status >= 500) continue;
           return;
         }
-        return readOfficialArticle(await response.json(), id);
+        return readOfficialArticle(await response.json(), id, game);
       } catch {
         signal.throwIfAborted();
       }

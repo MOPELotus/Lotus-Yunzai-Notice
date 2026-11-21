@@ -4,7 +4,8 @@ import { numberId, type AnnouncementConfig, type AnnouncementTarget } from "./my
 import { announcementArticleLink, announcementGames, announcementLabels, createAnnouncementSource, type AnnouncementGame,
   type AnnouncementKind, type AnnouncementPushKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
 import type { NoticeRedis } from "./store.ts";
-import { parsePublicAnnouncementQuery } from "./mys-public-query.ts";
+import { isPrivateMysCommand, parseMysArticleLink, parseMysSearch, parsePublicAnnouncementQuery } from "./mys-public-query.ts";
+import { createMysSearchSource } from "./mys-search-source.ts";
 
 interface Context {
   readonly isMaster: boolean;
@@ -90,7 +91,7 @@ type PresentList = (game: AnnouncementGame, kind: AnnouncementKind, posts: reado
 
 export function createOfficialAnnouncements(
   getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, config: AnnouncementConfig, signal?: AbortSignal,
-  feed = createAnnouncementSource(), now = Date.now, whenActive?: (start: () => void) => () => void, presentArticle?: PresentArticle, presentList?: PresentList,
+  feed = createAnnouncementSource(), now = Date.now, whenActive?: (start: () => void) => () => void, presentArticle?: PresentArticle, presentList?: PresentList, search = createMysSearchSource(),
 ) {
   const lifecycle = new AbortController();
   const active = signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal;
@@ -290,11 +291,41 @@ export function createOfficialAnnouncements(
       return `米游社${label}暂不可用。`;
     }
   }
+  async function articleReply(game: AnnouncementGame, id: string, title?: string): Promise<NoticeDeliveryReply | undefined> {
+    if (active.aborted) return;
+    const url = announcementArticleLink(game, id);
+    let article: Awaited<ReturnType<PresentArticle>> | undefined;
+    try {
+      article = await presentArticle?.(game, id, url, active);
+    } catch {
+      // Preserve the original link when the article or the card cannot be loaded.
+    }
+    if (active.aborted) return;
+    const text = `${article?.title ?? title ?? "米游社文章暂无法展开。"}\n${url}`;
+    return article?.pictures.length ? [{ type: "text", text }, ...article.pictures] : text;
+  }
+
   async function fallback(normalizedMessage: string) {
+    if (active.aborted) return;
     const target = parsePublicAnnouncementQuery(normalizedMessage);
-    if (!target || active.aborted) return;
-    return target.list ? list(target.game, target.kind, target.argument)
+    if (target) return target.list ? list(target.game, target.kind, target.argument)
       : query(target.game, target.kind, target.argument, target.page);
+
+    if (isPrivateMysCommand(normalizedMessage)) return;
+    const link = parseMysArticleLink(normalizedMessage);
+    if (link) return articleReply(link.game, link.id);
+
+    const request = parseMysSearch(normalizedMessage);
+    if (!request) return;
+    if ("error" in request) return request.error;
+    try {
+      const posts = await search(request.keyword, active);
+      if (!posts.length) return "没有搜到米游社文章，请换个关键词。";
+      const post = posts[request.offset];
+      return post ? articleReply("gs", post.id, post.title) : `仅有 ${posts.length} 条搜索结果。请输入第1到第${posts.length}条。`;
+    } catch {
+      if (!active.aborted) return "米游社搜索暂不可用。";
+    }
   }
 
   const commands: Record<string, (argument: string, context: Context) => Promise<NoticeDeliveryReply>> = {};
