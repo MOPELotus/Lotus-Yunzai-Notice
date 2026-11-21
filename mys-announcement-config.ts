@@ -33,7 +33,7 @@ function mapping(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function configuredTargets(value: unknown): AnnouncementTarget[] {
+export function configuredTargets(value: unknown): AnnouncementTarget[] {
   const targets: AnnouncementTarget[] = [];
   for (const [bot, groups] of Object.entries(mapping(value))) {
     const botId = numberId(bot);

@@ -59,7 +59,7 @@ async function targetsFor(redis: NoticeRedis, game: AnnouncementGame, kind: Anno
   return effectiveAnnouncementTargets(redis, targets, keyFor(game, kind));
 }
 
-export async function effectiveAnnouncementTargets(redis: NoticeRedis, targets: readonly AnnouncementTarget[], hashKey: string) {
+export async function effectiveAnnouncementTargets(redis: Pick<NoticeRedis, "hGetAll">, targets: readonly AnnouncementTarget[], hashKey: string) {
   const result = new Map(targets.map((target) => [keyForTarget(target), target]));
   for (const [key, state] of Object.entries(await redis.hGetAll(hashKey))) {
     const [bot, group, extra] = key.split(":");
