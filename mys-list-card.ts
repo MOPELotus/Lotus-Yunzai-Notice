@@ -7,6 +7,9 @@ import { dateFormat, readImage, sizeFont, text, wrapped } from "./mys-card-draw.
 import type { NoticeDeliverySegment } from "./delivery.ts";
 
 const width = 700;
+const scale = 4;
+// Skia filters and shadow distances use device pixels. Keep their former logical sizes.
+const effectScale = scale / 1.2;
 const left = 30;
 const cardWidth = width - left * 2;
 const headY = 35;
@@ -67,8 +70,8 @@ function panel(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h
   ctx.roundRect(x, y, w, h, radius);
   ctx.fillStyle = "#fff";
   ctx.shadowColor = "rgba(0,0,0,0.15)";
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetY = 5;
+  ctx.shadowBlur = 10 * effectScale;
+  ctx.shadowOffsetY = 5 * effectScale;
   ctx.fill();
   ctx.shadowColor = "transparent";
   ctx.shadowBlur = 0;
@@ -110,7 +113,6 @@ export function createAnnouncementListRenderer(root: URL, transport: typeof fetc
     active.throwIfAborted();
     const intro = `米游社·${gameNames[game]}${labels[kind]}列表`;
     const command = `#${announcementGames[game].name}${labels[kind]}`;
-    const scale = 1.2;
     const listHeight = 20 + rowHeight * posts.length;
     const height = listY + listHeight + 68;
     const metrics = new Canvas(1, 1).getContext("2d");

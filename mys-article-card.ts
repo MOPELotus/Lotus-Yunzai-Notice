@@ -10,7 +10,8 @@ const width = 900;
 const margin = 30;
 const maxPageHeight = 2_200;
 const maxImages = 18;
-const maxReplyBytes = 8 * 1024 * 1024;
+// Keep the complete article within the host's inline media budget for one message.
+const maxReplyBytes = 16 * 1024 * 1024;
 
 const countLabel = (value: number | undefined) =>
   value === undefined ? "—" : value > 10_000 ? `${(value / 10_000).toFixed(2)}万` : String(value);
@@ -168,22 +169,32 @@ export async function renderOfficialArticle(article: OfficialArticle, url: strin
   pages.push(page);
   if (pages.length > 10) throw new Error("米游社文章过长，请打开原文查看。");
 
-  let total = 0;
-  const result: NoticeDeliverySegment[] = [];
   const configured = process.env.LOTUS_SKIA_MODE;
   const mode = configured === "gpu" || configured === "cpu" ? configured : "auto";
-  for (const { rows: pageRows, height } of pages) {
-    active.throwIfAborted();
-    const { png, engine } = await renderPng(width, height, (ctx) => {
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, width, height);
-      let y = 40;
-      for (const row of pageRows) { row.draw(ctx, y); y += row.height; }
-    }, mode);
-    onRendered?.(engine);
-    total += png.byteLength;
-    if (total > maxReplyBytes) throw new Error("米游社文章图片过大，请打开原文查看。");
-    result.push({ type: "image", file: png });
+  async function renderPages(scale: 4 | 2) {
+    let total = 0;
+    const rendered: Awaited<ReturnType<typeof renderPng>>[] = [];
+    for (const { rows: pageRows, height } of pages) {
+      active.throwIfAborted();
+      const picture = await renderPng(width * scale, height * scale, (ctx) => {
+        ctx.scale(scale, scale);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, width, height);
+        let y = 40;
+        for (const row of pageRows) { row.draw(ctx, y); y += row.height; }
+      }, mode);
+      total += picture.png.byteLength;
+      if (total > maxReplyBytes) return;
+      rendered.push(picture);
+    }
+    return rendered;
   }
-  return result;
+
+  const rendered = await renderPages(4) ?? await renderPages(2);
+  if (!rendered) throw new Error("米游社文章图片过大，请打开原文查看。");
+  active.throwIfAborted();
+  return rendered.map(({ png, engine }) => {
+    onRendered?.(engine);
+    return { type: "image", file: png };
+  });
 }
