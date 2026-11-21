@@ -1,27 +1,18 @@
 import { stat } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { renderPng } from "@lotus-yunzai/skia";
-import { Canvas, FontLibrary, loadImage, type CanvasRenderingContext2D, type Image } from "skia-canvas";
+import type { PngRender } from "@lotus-yunzai/skia";
+import { drawInfoText, infoCardColors, measureInfoText, renderInfoCard } from "@lotus-yunzai/skia/info-card";
+import { loadImage, type CanvasRenderingContext2D, type Image } from "skia-canvas";
 import { announcementGames, type AnnouncementGame, type AnnouncementKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
-import { dateFormat, readImage, sizeFont, text, wrapped } from "./mys-card-draw.ts";
+import { dateFormat, maxMysReplyBytes, readImage, renderMode } from "./mys-card-draw.ts";
 import type { NoticeDeliverySegment } from "./delivery.ts";
 
-const width = 700;
-const scale = 4;
-// Skia filters and shadow distances use device pixels. Keep their former logical sizes.
-const effectScale = scale / 1.2;
-const left = 30;
-const cardWidth = width - left * 2;
-const headY = 35;
-const headHeight = 106;
-const listY = headY + headHeight + 20;
 const rowHeight = 169;
 const thumbWidth = 242;
 const thumbHeight = 124;
 const labels = { notice: "公告", info: "资讯" };
 const gameNames = { gs: "原神", sr: "崩坏星穹铁道", zzz: "绝区零" };
 
-async function background(root: URL, game: AnnouncementGame) {
+async function listBanner(root: URL, game: AnnouncementGame) {
   const paths = [new URL(`data/notice/miyoushe/${game}/header.png`, root)];
   if (game === "gs") {
     paths.push(new URL("data/genshin/resources/html/mysNews-list/蒙德.png", root),
@@ -34,131 +25,94 @@ async function background(root: URL, game: AnnouncementGame) {
       const image = await loadImage(Buffer.from(await Bun.file(path).arrayBuffer()));
       if (image.width && image.height && image.width * image.height <= 12_000_000) return image;
     } catch {
-      // The unillustrated header uses the white base of the original list.
+      // The common card supplies the background when a game banner was never installed.
     }
   }
 }
 
-async function loadNumberFont(root: URL) {
-  const choices = [
-    new URL("data/genshin/resources/font/tttgbnumber.ttf", root),
-    new URL("plugins/genshin/resources/font/tttgbnumber.ttf", root),
-  ];
-  for (const path of choices) {
-    try {
-      if (!await Bun.file(path).exists()) continue;
-      return Boolean(FontLibrary.use("NoticeListNumbers", [fileURLToPath(path)]));
-    } catch {
-      // Use the shared CJK and number fonts if the original is unavailable.
-    }
-  }
-  return false;
-}
-
-function clippedText(ctx: CanvasRenderingContext2D, input: string, rowWidth: number, size: number, bold: boolean, count = 1) {
-  const lines = wrapped(ctx, input, rowWidth, size, bold);
+function clippedText(ctx: CanvasRenderingContext2D, input: string, width: number, size: number, count: number) {
+  const lines = measureInfoText(ctx, input, width, size);
   if (lines.length <= count) return lines;
   const result = lines.slice(0, count);
-  const last = [...(result[count - 1] ?? "")];
-  while (last.length && ctx.measureText(last.join("") + "…").width > rowWidth) last.pop();
+  const last = Array.from(result[count - 1] ?? "");
+  while (last.length && ctx.measureText(last.join("") + "…").width > width) last.pop();
   result[count - 1] = last.join("") + "…";
   return result;
 }
 
-function panel(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, radius: number | number[]) {
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, h, radius);
-  ctx.fillStyle = "#fff";
-  ctx.shadowColor = "rgba(0,0,0,0.15)";
-  ctx.shadowBlur = 10 * effectScale;
-  ctx.shadowOffsetY = 5 * effectScale;
-  ctx.fill();
-  ctx.shadowColor = "transparent";
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-}
-
-function drawThumbnail(ctx: CanvasRenderingContext2D, image: Image | undefined, x: number, y: number) {
+function cover(ctx: CanvasRenderingContext2D, image: Image | undefined, x: number, y: number,
+  width: number, height: number) {
   ctx.save();
   ctx.beginPath();
-  ctx.roundRect(x, y, thumbWidth, thumbHeight, 8);
+  ctx.roundRect(x, y, width, height, 8);
   ctx.clip();
-  ctx.fillStyle = "#f6f6f6";
-  ctx.fillRect(x, y, thumbWidth, thumbHeight);
+  ctx.fillStyle = infoCardColors.tile;
+  ctx.fillRect(x, y, width, height);
   if (image) {
-    const ratio = Math.max(thumbWidth / image.width, thumbHeight / image.height);
+    const ratio = Math.max(width / image.width, height / image.height);
     const w = image.width * ratio;
     const h = image.height * ratio;
-    ctx.drawImage(image, x + (thumbWidth - w) / 2, y + (thumbHeight - h) / 2, w, h);
+    ctx.drawImage(image, x + (width - w) / 2, y + (height - h) / 2, w, h);
   }
   ctx.restore();
 }
 
 export function createAnnouncementListRenderer(root: URL, transport: typeof fetch = fetch,
-  onRendered?: (engine: Awaited<ReturnType<typeof renderPng>>["engine"]) => void) {
-  let listFontReady: Promise<boolean> | undefined;
+  onRendered?: (engine: PngRender["engine"]) => void) {
   return async (game: AnnouncementGame, kind: AnnouncementKind, input: readonly OfficialAnnouncement[],
     active: AbortSignal): Promise<NoticeDeliverySegment | undefined> => {
     const posts = input.slice(0, 5);
     if (!posts.length) return;
     const imageSignal = AbortSignal.any([active, AbortSignal.timeout(5_000)]);
-    const [header, originalFont, thumbnails] = await Promise.all([
-      background(root, game),
-      listFontReady ??= loadNumberFont(root),
+    const [banner, thumbnails] = await Promise.all([
+      listBanner(root, game),
       Promise.all(posts.map((post) => {
         const url = post.listPreview?.image ?? post.image;
-        return url && readImage(url, imageSignal, transport);
+        return url ? readImage(url, imageSignal, transport) : undefined;
       })),
     ]);
     active.throwIfAborted();
-    const intro = `米游社·${gameNames[game]}${labels[kind]}列表`;
+    const title = `米游社·${gameNames[game]}${labels[kind]}列表`;
     const command = `#${announcementGames[game].name}${labels[kind]}`;
-    const listHeight = 20 + rowHeight * posts.length;
-    const height = listY + listHeight + 68;
-    const metrics = new Canvas(1, 1).getContext("2d");
-    const textX = left + 74;
-    const thumbX = left + cardWidth - 20 - thumbWidth;
-    const textWidth = thumbX - textX - 14;
-    const rowText = posts.map((post) => ({
-      headline: clippedText(metrics, post.title, textWidth, 22, true)[0] ?? "",
-      lines: clippedText(metrics, post.listPreview?.text ?? post.summary ?? "", textWidth, 18, false, 3),
-      time: dateFormat.format(post.created * 1000),
-    }));
-    const configured = process.env.LOTUS_SKIA_MODE;
-    const mode = configured === "gpu" || configured === "cpu" ? configured : "auto";
-    const rendered = await renderPng(Math.round(width * scale), Math.ceil(height * scale), (ctx) => {
-      ctx.scale(scale, scale);
-      ctx.fillStyle = "#f5f6fb";
-      ctx.fillRect(0, 0, width, height);
-
-      panel(ctx, left, headY, cardWidth, headHeight, [15, 50, 50, 15]);
-      if (header) {
-        ctx.save();
-        ctx.clip();
-        ctx.drawImage(header, left, headY, cardWidth, header.height * cardWidth / header.width);
-        ctx.restore();
-      }
-      text(ctx, intro, left + 40, headY + 33, 30, "#333", "left", true);
-
-      panel(ctx, left, listY, cardWidth, listHeight, 15);
-      for (const [index, row] of rowText.entries()) {
-        const y = listY + 10 + index * rowHeight;
-        if (index) {
-          ctx.fillStyle = "#ddd";
-          ctx.fillRect(left, y, cardWidth, 1);
+    const footer = `详情内容使用 ${command} 加上序号查看，如 ${command}2`;
+    const bannerHeight = banner ? 118 : 0;
+    const paint = (scale: 4 | 2) => renderInfoCard({ title }, ({ x, y, width, measure }) => {
+      const imageX = x + width - 20 - thumbWidth;
+      const textX = x + 70;
+      const textWidth = imageX - textX - 22;
+      const rows = posts.map((post) => ({
+        headline: clippedText(measure, post.title, textWidth, 24, 2),
+        summary: clippedText(measure, post.listPreview?.text ?? post.summary ?? "", textWidth, 18, 3),
+        date: dateFormat.format(post.created * 1000),
+      }));
+      const listTop = y + bannerHeight;
+      return { height: bannerHeight + rowHeight * posts.length + 36, draw(ctx) {
+        if (banner) cover(ctx, banner, x, y, width, bannerHeight - 10);
+        for (const [index, row] of rows.entries()) {
+          const top = listTop + index * rowHeight;
+          if (index) {
+            ctx.fillStyle = infoCardColors.rule;
+            ctx.fillRect(x, top, width, 1);
+          }
+          drawInfoText(ctx, [String(index + 1)], x + 28, top + 63, { size: 29, align: "center", color: infoCardColors.gold });
+          drawInfoText(ctx, row.headline, textX, top + 17, { size: 24, leading: 30 });
+          drawInfoText(ctx, row.summary, textX, top + 76, { size: 18, leading: 19, color: infoCardColors.muted });
+          drawInfoText(ctx, [row.date], textX, top + 137, { size: 16, color: infoCardColors.gold });
+          cover(ctx, thumbnails[index], imageX, top + 22, thumbWidth, thumbHeight);
         }
-        ctx.font = originalFont ? '26px "NoticeListNumbers", sans-serif' : sizeFont(26);
-        ctx.textBaseline = "middle";
-        ctx.textAlign = "center";
-        ctx.fillStyle = "#333";
-        ctx.fillText(String(index + 1), left + 40, y + rowHeight / 2);
-        text(ctx, row.headline, textX, y + 23, 22, "#333", "left", true);
-        for (const [line, snippet] of row.lines.entries()) text(ctx, snippet, textX, y + 59 + line * 24, 18, "#999");
-        text(ctx, row.time, textX, y + 139, 16, "#999");
-        drawThumbnail(ctx, thumbnails[index] || undefined, thumbX, y + 24);
-      }
-      text(ctx, `详情内容使用 ${command} 加上序号查看，如 ${command}2`, width / 2, height - 43, 14, "#7994a7", "center");
-    }, mode);
+        const end = listTop + rowHeight * posts.length;
+        ctx.fillStyle = infoCardColors.rule;
+        ctx.fillRect(x, end, width, 1);
+        drawInfoText(ctx, [footer], x + width / 2, end + 13, { size: 16, align: "center", color: infoCardColors.gold });
+      } };
+    }, { mode: renderMode(), scale });
+    let rendered = await paint(4);
+    if (rendered.png.byteLength > maxMysReplyBytes && !rendered.reducedScaleReason) {
+      active.throwIfAborted();
+      rendered = await paint(2);
+    }
+    active.throwIfAborted();
+    if (rendered.png.byteLength > maxMysReplyBytes) return;
     onRendered?.(rendered.engine);
     return { type: "image", file: rendered.png };
   };

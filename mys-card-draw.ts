@@ -2,6 +2,12 @@ import { loadImage, type CanvasRenderingContext2D, type Image } from "skia-canva
 import { postImage } from "./mys-announcement-source.ts";
 import { readPublicMys, type PublicMysTransport } from "./mys-public-request.ts";
 
+export const maxMysReplyBytes = 16 * 1024 * 1024;
+export function renderMode() {
+  const mode = process.env.LOTUS_SKIA_MODE;
+  return mode === "gpu" || mode === "cpu" ? mode : "auto";
+}
+
 const maxImageBytes = 6 * 1024 * 1024;
 const fontFamily = '"Noto Sans CJK SC", MiSans, Arial, sans-serif';
 export const dateFormat = new Intl.DateTimeFormat("zh-CN", {
@@ -35,7 +41,8 @@ async function readImageBytes(result: Response): Promise<Buffer | undefined> {
   return Buffer.concat(chunks);
 }
 
-export async function readImage(url: string, signal: AbortSignal, transport: PublicMysTransport): Promise<Image | undefined> {
+export async function readImageAsset(url: string, signal: AbortSignal,
+  transport: PublicMysTransport): Promise<{ image: Image; bytes: Buffer } | undefined> {
   const accepted = postImage(url);
   if (!accepted) return;
   const address = new URL(accepted);
@@ -45,10 +52,14 @@ export async function readImage(url: string, signal: AbortSignal, transport: Pub
     const bytes = await readPublicMys({ url: address, alternate, signal, phaseMs: alternate ? 2_500 : undefined }, transport, readImageBytes);
     if (!bytes) return;
     const image = await loadImage(bytes);
-    if (!signal.aborted && image.width > 0 && image.height > 0 && image.width * image.height <= 30_000_000) return image;
+    if (!signal.aborted && image.width > 0 && image.height > 0 && image.width * image.height <= 30_000_000) return { image, bytes };
   } catch {
     return;
   }
+}
+
+export async function readImage(url: string, signal: AbortSignal, transport: PublicMysTransport) {
+  return (await readImageAsset(url, signal, transport))?.image;
 }
 
 export const sizeFont = (size: number, bold = false) => `${bold ? "bold " : ""}${size}px ${fontFamily}`;
