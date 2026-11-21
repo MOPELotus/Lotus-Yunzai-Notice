@@ -15,12 +15,26 @@ const legacyQueue = (botId: number) => `Yz:apgl:${botId}`;
 const local = (now: number) => new Date(now + 8*3_600_000);
 const chinaDay = (now: number) => local(now).toISOString().slice(0,10);
 const chinaTime = (now: number) => local(now).toISOString().slice(0,19).replace("T"," ");
+const activityDisabled = -2;
 
 const claimActivity = `
 if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] then return -1 end
-if redis.call('HGET', KEYS[3], ARGV[2]) == 'off' then return 0 end
+if redis.call('HGET', KEYS[3], ARGV[2]) == 'off' then return ${activityDisabled} end
 if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
 redis.call('SET', KEYS[2], ARGV[3], 'EX', 259200)
+return 1
+`;
+
+const verifyActivityClaim = `
+if redis.call('GET', KEYS[2]) ~= ARGV[3] then return -1 end
+if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] then
+  redis.call('DEL', KEYS[2])
+  return -1
+end
+if redis.call('HGET', KEYS[3], ARGV[2]) == 'off' then
+  redis.call('DEL', KEYS[2])
+  return ${activityDisabled}
+end
 return 1
 `;
 
@@ -177,16 +191,25 @@ export function createActivityExpiryNotices(
       const hash = createHash("sha256").update(JSON.stringify([event.title,event.end])).digest("hex");
       const receipt = `lotus-yunzai:notice:mys:expiry:${date}:${game}:${groupId}:${hash}`;
       const token = JSON.stringify({state:"pending",token:crypto.randomUUID(),botId});
-      const claim = await redis.eval(claimActivity,{
+      const claimArgs = {
         keys:[oldKey,receipt,targetKey(game)], arguments:[raw,`${botId}:${groupId}`,token],
-      });
+      };
+      const claim = await redis.eval(claimActivity,claimArgs);
       if (claim === -1) return;
+      if (claim === activityDisabled) retry = true;
       if (claim !== 1) continue;
       let result = "";
       let dispatched = false;
       if (!active.aborted) {
         try {
           await wait(active);
+          active.throwIfAborted();
+          const currentClaim = await redis.eval(verifyActivityClaim,claimArgs);
+          if (currentClaim === activityDisabled) {
+            retry = true;
+            continue;
+          }
+          if (currentClaim !== 1) return;
           active.throwIfAborted();
           const deliveryAt = now();
           if (event.end <= deliveryAt || chinaDay(deliveryAt) !== date) {
