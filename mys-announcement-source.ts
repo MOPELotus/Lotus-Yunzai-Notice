@@ -8,7 +8,14 @@ export const announcementGames = {
 } as const;
 
 export type AnnouncementGame = keyof typeof announcementGames;
-export type AnnouncementKind = "notice" | "info";
+export type AnnouncementPushKind = "notice" | "info";
+export type AnnouncementKind = AnnouncementPushKind | "activity";
+export const announcementLabels = { notice: "公告", info: "资讯", activity: "活动" } as const;
+const sourceChannel = { notice: "1", activity: "2", info: "3" } as const;
+
+export function announcementArticleLink(game: AnnouncementGame, id: string) {
+  return `https://www.miyoushe.com/${announcementGames[game].slug}/article/${id}`;
+}
 
 export interface OfficialAnnouncement {
   readonly id: string;
@@ -75,7 +82,7 @@ export function readAnnouncementFeed(value: unknown, limit = 10, sourceOrder = f
 export function createAnnouncementSource(transport: PublicMysTransport = fetch) {
   return async (game: AnnouncementGame, signal: AbortSignal, kind: AnnouncementKind = "notice", limit: 5 | 10 | 20 = 10): Promise<readonly OfficialAnnouncement[]> => {
     const url = new URL("https://bbs-api-static.miyoushe.com/painter/wapi/getNewsList");
-    url.search = new URLSearchParams({ gids: String(announcementGames[game].id), page_size: String(limit), type: kind === "info" ? "3" : "1" }).toString();
+    url.search = new URLSearchParams({ gids: String(announcementGames[game].id), page_size: String(limit), type: sourceChannel[kind] }).toString();
     const alternate = new URL(url.href);
     alternate.hostname = "bbs-api.mihoyo.com";
     return readPublicMys({

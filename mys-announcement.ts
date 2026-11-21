@@ -1,8 +1,10 @@
 import { Job } from "node-schedule";
 import { noticeAccounts, noticeAdapter, type NoticeAccount, type NoticeDeliveryHost, type NoticeDeliveryReply, type NoticeDeliverySegment } from "./delivery.ts";
 import { numberId, type AnnouncementConfig, type AnnouncementTarget } from "./mys-announcement-config.ts";
-import { announcementGames, createAnnouncementSource, type AnnouncementGame, type AnnouncementKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
+import { announcementArticleLink, announcementGames, announcementLabels, createAnnouncementSource, type AnnouncementGame,
+  type AnnouncementKind, type AnnouncementPushKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
 import type { NoticeRedis } from "./store.ts";
+import { parsePublicAnnouncementQuery } from "./mys-public-query.ts";
 
 interface Context {
   readonly isMaster: boolean;
@@ -14,8 +16,7 @@ interface Context {
 
 const games = Object.keys(announcementGames) as AnnouncementGame[];
 const kinds = ["notice", "info"] as const;
-const labels = { notice:"公告", info:"资讯" };
-const keyFor = (game: AnnouncementGame, kind: AnnouncementKind) =>
+const keyFor = (game: AnnouncementGame, kind: AnnouncementPushKind) =>
   `lotus-yunzai:notice:mys:${game}:${kind === "info" ? "info-targets" : "targets"}`;
 const keyForTarget = ({ botId, groupId }: AnnouncementTarget) => `${botId}:${groupId}`;
 const legacyReceipt = (game: AnnouncementGame, botId: number, groupId: number, id: string) =>
@@ -46,13 +47,9 @@ else
 end
 return 1`;
 
-function link(game: AnnouncementGame, id: string) {
-  return `https://www.miyoushe.com/${announcementGames[game].slug}/article/${id}`;
-}
-
 function message(game: AnnouncementGame, post: OfficialAnnouncement, kind: AnnouncementKind = "notice"): NoticeDeliveryReply {
-  const body = [`【${announcementGames[game].name}${labels[kind]}】${post.title}`,
-    ...(post.summary ? [post.summary] : []), link(game, post.id)].join("\n");
+  const body = [`【${announcementGames[game].name}${announcementLabels[kind]}】${post.title}`,
+    ...(post.summary ? [post.summary] : []), announcementArticleLink(game, post.id)].join("\n");
   return post.image ? [{ type: "text", text: body }, { type: "image", file: post.image }] : body;
 }
 
@@ -60,7 +57,7 @@ function notSent(error: unknown): boolean {
   return typeof error === "object" && error !== null && "delivery" in error && error.delivery === "not-sent";
 }
 
-async function targetsFor(redis: NoticeRedis, game: AnnouncementGame, kind: AnnouncementKind, config: AnnouncementConfig) {
+async function targetsFor(redis: NoticeRedis, game: AnnouncementGame, kind: AnnouncementPushKind, config: AnnouncementConfig) {
   const targets = (kind === "notice" ? config.targets : config.infoTargets)[game];
   return effectiveAnnouncementTargets(redis, targets, keyFor(game, kind));
 }
@@ -101,12 +98,12 @@ export function createOfficialAnnouncements(
   const timer = new Job(() => { void run()?.catch(() => console.warn("[notice] 米游社公告推送失败。")); });
 
   async function present(game: AnnouncementGame, post: OfficialAnnouncement, kind: AnnouncementKind, push = false): Promise<NoticeDeliveryReply> {
-    const url = link(game, post.id);
+    const url = announcementArticleLink(game, post.id);
     if (!presentArticle || active.aborted) return message(game, post, kind);
     try {
       const article = await presentArticle(game, post.id, url, active);
       if (article?.pictures.length) {
-        const title = `${announcementGames[game].name}${labels[kind]}${push ? "推送" : ""}：${article.title}`;
+        const title = `${announcementGames[game].name}${announcementLabels[kind]}${push ? "推送" : ""}：${article.title}`;
         return [{ type: "text", text: `${title}\n${url}` }, ...article.pictures];
       }
     } catch {
@@ -115,7 +112,7 @@ export function createOfficialAnnouncements(
     return message(game, post, kind);
   }
 
-  async function poll(selected: readonly AnnouncementGame[], channels: readonly AnnouncementKind[]) {
+  async function poll(selected: readonly AnnouncementGame[], channels: readonly AnnouncementPushKind[]) {
     const report = { confirmed: 0, rejected: 0, unknown: 0, skipped: 0, failed: 0 };
     const redis = getRedis();
     if (!redis || active.aborted || config.maxNum === 0) return report;
@@ -125,7 +122,7 @@ export function createOfficialAnnouncements(
     for (const game of selected) {
       if (active.aborted) break;
       try {
-        const entries: { post:OfficialAnnouncement; kind:AnnouncementKind; destinations:AnnouncementDestination[] }[] = [];
+        const entries: { post:OfficialAnnouncement; kind:AnnouncementPushKind; destinations:AnnouncementDestination[] }[] = [];
         for (const kind of channels) {
           if (active.aborted) break;
           try {
@@ -218,7 +215,7 @@ export function createOfficialAnnouncements(
     return report;
   }
 
-  function run(selected = games, channels: readonly AnnouncementKind[] = kinds) {
+  function run(selected = games, channels: readonly AnnouncementPushKind[] = kinds) {
     if (pending || active.aborted) return;
     pending = poll(selected, channels).finally(() => { pending = undefined; });
     return pending;
@@ -254,12 +251,58 @@ export function createOfficialAnnouncements(
     }
   }
 
+  async function query(game: AnnouncementGame, kind: AnnouncementKind, argument: string, fixedPage?: number): Promise<NoticeDeliveryReply> {
+    const input = argument.trim();
+    const { name } = announcementGames[game];
+    const label = announcementLabels[kind];
+    const page = fixedPage ?? (input ? Number(input) : 1);
+    if ((fixedPage !== undefined && input) || (fixedPage === undefined && input && !/^[1-9]\d*$/u.test(input)) ||
+      !Number.isInteger(page) || page < 1 || page > 20) {
+      return `用法 #${name}${label} [1-20]`;
+    }
+    try {
+      const posts = await feed(game, active, kind, 20);
+      const post = posts[page - 1];
+      if (!posts.length) return `暂无${name}${label}。`;
+      return post ? await present(game, post, kind) : `仅有 ${posts.length} 条${name}${label}，请输入 1-${posts.length}。`;
+    } catch {
+      return `米游社${label}暂不可用。`;
+    }
+  }
+  async function list(game: AnnouncementGame, kind: AnnouncementKind, argument: string): Promise<NoticeDeliveryReply> {
+    const { name } = announcementGames[game];
+    const label = announcementLabels[kind];
+    if (argument.trim()) return `用法 #${name}${label}列表`;
+    try {
+      const posts = (await feed(game, active, kind, 5)).slice(0, 5);
+      if (!posts.length) return `暂无${name}${label}。`;
+      const links = [`${name}${label}列表`, ...posts.flatMap((post, index) => [
+        `${index + 1}. ${post.title}`, announcementArticleLink(game, post.id),
+      ])].join("\n");
+      try {
+        const image = await presentList?.(game, kind, posts, active);
+        if (image) return [image, { type: "text", text: links }];
+      } catch {
+        // Keep the links visible when list rendering is unavailable.
+      }
+      return links;
+    } catch {
+      return `米游社${label}暂不可用。`;
+    }
+  }
+  async function fallback(normalizedMessage: string) {
+    const target = parsePublicAnnouncementQuery(normalizedMessage);
+    if (!target || active.aborted) return;
+    return target.list ? list(target.game, target.kind, target.argument)
+      : query(target.game, target.kind, target.argument, target.page);
+  }
+
   const commands: Record<string, (argument: string, context: Context) => Promise<NoticeDeliveryReply>> = {};
   const aliases: Record<string, string> = {};
   for (const game of games) {
     const { name } = announcementGames[game];
     for (const kind of kinds) {
-      const label = labels[kind];
+      const label = announcementLabels[kind];
       for (const [action, value] of [["开启", "on"], ["关闭", "off"]] as const) {
         const configure = async (argument: string, context: Context) => {
           if (argument.trim()) return `用法 #${name}${action}${label}推送`;
@@ -301,45 +344,10 @@ export function createOfficialAnnouncements(
       commands[`#${name}推送${label}`] = push;
       if (game === "gs" && kind === "info") commands["#推送资讯"] = push;
 
-      async function query(argument: string, fixedPage?: number): Promise<NoticeDeliveryReply> {
-        const input = argument.trim();
-        const page = fixedPage ?? (input ? Number(input) : 1);
-        if ((fixedPage !== undefined && input) || (fixedPage === undefined && input && !/^[1-9]\d*$/u.test(input)) ||
-          !Number.isInteger(page) || page < 1 || page > 20) {
-          return `用法 #${name}${label} [1-20]`;
-        }
-        try {
-          const posts = await feed(game, active, kind, 20);
-          const post = posts[page - 1];
-          if (!posts.length) return `暂无${name}${label}。`;
-          return post ? await present(game, post, kind) : `仅有 ${posts.length} 条${name}${label}，请输入 1-${posts.length}。`;
-        } catch {
-          return `米游社${label}暂不可用。`;
-        }
-      }
-      async function list(argument: string): Promise<NoticeDeliveryReply> {
-        if (argument.trim()) return `用法 #${name}${label}列表`;
-        try {
-          const posts = (await feed(game, active, kind, 5)).slice(0, 5);
-          if (!posts.length) return `暂无${name}${label}。`;
-          const links = [`${name}${label}列表`, ...posts.flatMap((post, index) => [
-            `${index + 1}. ${post.title}`, link(game, post.id),
-          ])].join("\n");
-          try {
-            const image = await presentList?.(game, kind, posts, active);
-            if (image) return [image, { type: "text", text: links }];
-          } catch {
-            // Keep the links visible when list rendering is unavailable.
-          }
-          return links;
-        } catch {
-          return `米游社${label}暂不可用。`;
-        }
-      }
       const canonical = `${name}${label}`;
-      commands[`#${canonical}`] = (argument) => query(argument);
-      commands[`#${canonical}列表`] = list;
-      for (let page = 1; page <= 20; page++) commands[`#${canonical}${page}`] = (argument) => query(argument, page);
+      commands[`#${canonical}`] = (argument) => query(game, kind, argument);
+      commands[`#${canonical}列表`] = (argument) => list(game, kind, argument);
+      for (let page = 1; page <= 20; page++) commands[`#${canonical}${page}`] = (argument) => query(game, kind, argument, page);
       for (const spelling of game === "gs" ? [name, "官方", ""] : [name]) {
         const short = `${spelling}${label}`;
         if (short !== canonical) {
@@ -350,5 +358,5 @@ export function createOfficialAnnouncements(
       }
     }
   }
-  return { commands, aliases, run, dispose };
+  return { commands, aliases, fallback, run, dispose };
 }

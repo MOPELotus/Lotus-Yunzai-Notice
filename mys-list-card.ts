@@ -2,14 +2,13 @@ import { stat } from "node:fs/promises";
 import type { PngRender } from "@lotus-yunzai/skia";
 import { drawInfoText, infoCardColors, measureInfoText, renderInfoCard } from "@lotus-yunzai/skia/info-card";
 import { loadImage, type CanvasRenderingContext2D, type Image } from "skia-canvas";
-import { announcementGames, type AnnouncementGame, type AnnouncementKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
+import { announcementGames, announcementLabels, type AnnouncementGame, type AnnouncementKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
 import { dateFormat, maxMysReplyBytes, readImage, renderMode } from "./mys-card-draw.ts";
 import type { NoticeDeliverySegment } from "./delivery.ts";
 
 const rowHeight = 169;
 const thumbWidth = 242;
 const thumbHeight = 124;
-const labels = { notice: "公告", info: "资讯" };
 const gameNames = { gs: "原神", sr: "崩坏星穹铁道", zzz: "绝区零" };
 
 async function listBanner(root: URL, game: AnnouncementGame) {
@@ -72,8 +71,8 @@ export function createAnnouncementListRenderer(root: URL, transport: typeof fetc
       })),
     ]);
     active.throwIfAborted();
-    const title = `米游社·${gameNames[game]}${labels[kind]}列表`;
-    const command = `#${announcementGames[game].name}${labels[kind]}`;
+    const title = `米游社·${gameNames[game]}${announcementLabels[kind]}列表`;
+    const command = `#${announcementGames[game].name}${announcementLabels[kind]}`;
     const footer = `详情内容使用 ${command} 加上序号查看，如 ${command}2`;
     const bannerHeight = banner ? 118 : 0;
     const paint = (scale: 4 | 2) => renderInfoCard({ title }, ({ x, y, width, measure }) => {

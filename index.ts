@@ -1,11 +1,12 @@
 import { decorateNotice, parseNoticeInput, type InboundNoticeSegment, type NoticeReply } from "./content.ts";
-import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost } from "./delivery.ts";
+import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost, type NoticeDeliveryReply } from "./delivery.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
 import { configuredAnnouncements } from "./mys-announcement-config.ts";
 import { createAnnouncementListRenderer } from "./mys-list-card.ts";
 import { createArticleSource } from "./mys-article-source.ts";
 import { renderOfficialArticle } from "./mys-article-card.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
+import { publicMysFeatureNames } from "./mys-public-query.ts";
 import { configuredNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
 import { createTargetCommands } from "./target-commands.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
@@ -242,13 +243,19 @@ function describeReceipt(receipt: DeliveryReceipt): string {
   }
 }
 
+type PublicMysFallback = (message: string, context: { normalizedMessage: string }) => Promise<NoticeDeliveryReply | undefined>;
+
 export function createModule({ groups, noticeGroups = groups, signal, whenNoticeActive }: {
   groups: NoticeDeliveryHost; noticeGroups?: NoticeDeliveryHost; signal?: AbortSignal;
   whenNoticeActive?: (start: () => void) => () => void;
 }):
-  ReturnType<typeof createNoticePlugin> & { aliases?: Record<string,string>; dispose?: () => Promise<void> } {
+  ReturnType<typeof createNoticePlugin> & { aliases?: Record<string,string>; dispose?: () => Promise<void>;
+    fallback?: PublicMysFallback;
+    fallbackFeatures?: () => readonly string[];
+  } {
   const module = createNoticePlugin(hostRedis, noticeGroups, signal);
   let aliases: Record<string,string> | undefined;
+  let fallback: PublicMysFallback | undefined;
   const disposers: (() => Promise<void>)[] = [];
   try {
     const window = configuredNoticeSchedule();
@@ -276,6 +283,7 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
       }, createAnnouncementListRenderer(root));
     Object.assign(module.commands, official.commands);
     aliases = official.aliases;
+    fallback = (_message, context) => official.fallback(context.normalizedMessage);
     disposers.push(official.dispose);
     const expiry = createActivityExpiryNotices(hostRedis, noticeGroups, config, signal, undefined, undefined, whenNoticeActive);
     Object.assign(module.commands, expiry.commands);
@@ -284,7 +292,10 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
     console.warn("[notice] 无法读取米游社公告推送配置。");
   }
   if (!disposers.length) return module;
-  return { ...module, aliases, async dispose() { await Promise.all(disposers.map((dispose) => dispose())); } };
+  return {
+    ...module, aliases, ...(fallback && { fallback, fallbackFeatures: () => publicMysFeatureNames }),
+    async dispose() { await Promise.all(disposers.map((dispose) => dispose())); },
+  };
 }
 
 export default createNoticePlugin();
