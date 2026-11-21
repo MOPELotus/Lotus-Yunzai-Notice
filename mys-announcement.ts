@@ -29,6 +29,13 @@ end
 redis.call('SET', KEYS[1], ARGV[1], 'EX', 36000)
 redis.call('SET', KEYS[3], ARGV[1], 'EX', 36000)
 return 1`;
+const verifyClaim = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] or redis.call('GET', KEYS[3]) ~= ARGV[1] then return 0 end
+if redis.call('HGET', KEYS[2], ARGV[2]) == 'off' then return 0 end
+for i = 4, #KEYS do
+  if redis.call('EXISTS', KEYS[i]) == 1 then return 0 end
+end
+return 1`;
 const settle = `
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
 if ARGV[2] == '' then
@@ -165,14 +172,26 @@ export function createOfficialAnnouncements(
             const key = `lotus-yunzai:notice:mys:${game}:delivery:${groupId}:${post.id}`;
             const legacy = legacyReceipt(game, botId, groupId, post.id);
             const token = JSON.stringify({ state: "pending", token: crypto.randomUUID(), ...sender });
-            if (await redis.eval(claim, {
+            const claimArgs = {
               keys: [key, keyFor(game, kind), legacy, ...botIds.filter((id) => id !== botId).map((id) => legacyReceipt(game, id, groupId, post.id))],
               arguments: [token, keyForTarget({ botId, groupId })],
-            }) !== 1) { report.skipped++; continue; }
+            };
+            if (await redis.eval(claim, claimArgs) !== 1) { report.skipped++; continue; }
             if (!active.aborted) presentation ??= await present(game, post, kind, true);
-            if (active.aborted) {
-              await redis.eval(settle, { keys: [key, legacy], arguments: [token, ""] });
-              return report;
+            const discard = { keys: [key, legacy], arguments: [token, ""] };
+            let currentClaim: unknown;
+            try {
+              if (!active.aborted) currentClaim = await redis.eval(verifyClaim, claimArgs);
+            } catch (error) {
+              // Delivery has not started, so a transient storage error can still release this claim.
+              await redis.eval(settle, discard).catch(() => undefined);
+              throw error;
+            }
+            if (active.aborted || currentClaim !== 1) {
+              await redis.eval(settle, discard);
+              if (active.aborted) return report;
+              report.skipped++;
+              continue;
             }
             counts.set(groupId, count + 1);
             let state: string;

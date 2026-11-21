@@ -1348,6 +1348,114 @@ test.skipIf(!available)("旧 cron 实际触发米游社订阅，只从当前在�
     .toEqual({ state: "confirmed", botId: 80, adapter: "milky", messageId: 70 });
 });
 
+test.skipIf(!available)("公告和资讯准备详情时关闭推送，新旧占位释放且重新开启只投递一次", async () => {
+  const now = 1_800_000_000;
+  const config = parseAnnouncementConfig(`
+pushTime: '0 0 10 1 1 *'
+gsannounceGroup: { '70': [90] }
+gsinfoGroup: { '70': [90] }
+`);
+  const admin = { isMaster: false, message_type: "group", self_id: 70, group_id: 90,
+    member: { is_admin: true, is_owner: false } };
+  for (const [kind, label, id, adapter] of [["notice", "公告", "1601", "onebot"], ["info", "资讯", "1602", "milky"]] as const) {
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    const attempts: number[] = [];
+    const host: NoticeDeliveryHost = {
+      onlineBots: () => [],
+      async listGroups() { throw new Error("测试应走已选协议账号"); },
+      async sendGroup() { throw new Error("测试应走已选协议账号"); },
+      async deleteMessage() {},
+      noticeAccounts: () => [{
+        botId: 70, adapter,
+        async listGroups() { return [{ id: 90 }]; },
+        async sendGroup(groupId) { attempts.push(groupId); return 901; },
+      }],
+    };
+    const service = createOfficialAnnouncements(() => redis, host, config, undefined,
+      async () => [{ id, created: now - 1, title: "图文合成样本" }], () => now * 1000, undefined, async () => {
+        entered.resolve();
+        await released.promise;
+        return { title: "图文合成样本", pictures: [{ type: "image", file: "base64://AQI=" }] };
+      });
+    const receipt = `lotus-yunzai:notice:mys:gs:delivery:90:${id}`;
+    const legacy = `Yz:gs:mys:newPush:70:90:${id}`;
+    const targets = kind === "notice" ? "targets" : "info-targets";
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const polling = service.run(["gs"], [kind]);
+      await Promise.race([entered.promise, new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("公告未进入详情准备。")), 2_000);
+      })]);
+      clearTimeout(timeout);
+      const owned = await exec("GET", receipt);
+      expect(JSON.parse(owned as string)).toMatchObject({ state: "pending", botId: 70 });
+      expect(await exec("GET", legacy)).toBe(owned);
+      expect(await service.commands[`#原神关闭${label}推送`]!("", admin)).toBe(`原神${label}推送已关闭。`);
+      expect(await exec("HGET", `lotus-yunzai:notice:mys:gs:${targets}`, "70:90")).toBe("off");
+
+      released.resolve();
+      expect(await polling).toMatchObject({ confirmed: 0, skipped: 1 });
+      expect(attempts).toEqual([]);
+      expect(await exec("GET", receipt)).toBeNull();
+      expect(await exec("GET", legacy)).toBeNull();
+
+      expect(await service.commands[`#原神开启${label}推送`]!("", admin)).toBe(`原神${label}推送已开启。`);
+      expect(await service.run(["gs"], [kind])).toMatchObject({ confirmed: 1 });
+      expect(attempts).toEqual([90]);
+      expect(JSON.parse(await exec("GET", receipt) as string)).toEqual({
+        state: "confirmed", botId: 70, ...(adapter === "milky" ? { adapter } : {}), messageId: 901,
+      });
+      expect(await exec("GET", legacy)).toBe("1");
+      expect(await service.run(["gs"], [kind])).toMatchObject({ confirmed: 0, skipped: 1 });
+      expect(attempts).toEqual([90]);
+    } finally {
+      clearTimeout(timeout);
+      released.resolve();
+      await service.dispose();
+    }
+  }
+});
+
+test.skipIf(!available)("公告准备详情时收到旧账号的投递记录，保留旧回执且不重复发送", async () => {
+  const now = 1_800_000_000;
+  const entered = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  const config = parseAnnouncementConfig("pushTime: '0 0 10 1 1 *'\ngsannounceGroup: { '70': [90], '71': [90] }\n");
+  const attempts: number[] = [];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [70, 71],
+    async listGroups() { return [{ id: 90 }]; },
+    async sendGroup(botId) { attempts.push(botId); return 901; },
+    async deleteMessage() {},
+  };
+  const service = createOfficialAnnouncements(() => redis, host, config, undefined,
+    async () => [{ id: "1603", created: now - 1, title: "已投递公告" }], () => now * 1000, undefined, async () => {
+      entered.resolve();
+      await released.promise;
+      return undefined;
+    });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const polling = service.run(["gs"], ["notice"]);
+    await Promise.race([entered.promise, new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error("公告未进入详情准备。")), 2_000);
+    })]);
+    clearTimeout(timeout);
+    await exec("SET", "Yz:gs:mys:newPush:71:90:1603", "1", "EX", "36000");
+    released.resolve();
+    expect(await polling).toMatchObject({ confirmed: 0, skipped: 1 });
+    expect(attempts).toEqual([]);
+    expect(await exec("GET", "lotus-yunzai:notice:mys:gs:delivery:90:1603")).toBeNull();
+    expect(await exec("GET", "Yz:gs:mys:newPush:70:90:1603")).toBeNull();
+    expect(await exec("GET", "Yz:gs:mys:newPush:71:90:1603")).toBe("1");
+  } finally {
+    clearTimeout(timeout);
+    released.resolve();
+    await service.dispose();
+  }
+});
+
 test("活动到期读取原游戏列表格式，过滤已过期、两天外和错误分类", () => {
   const now = Date.parse("2026-11-20T10:00:00+08:00");
   const gs = {retcode:0,data:{list:[{}, {list:[
