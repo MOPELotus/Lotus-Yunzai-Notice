@@ -4,7 +4,7 @@ import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
 import { createAnnouncementSource } from "./mys-announcement-source.ts";
 import { parseMysArticleLink, parseMysSearch, publicMysFeatureNames } from "./mys-public-query.ts";
 import { readOfficialArticle } from "./mys-article-source.ts";
-import { createMysSearchSource } from "./mys-search-source.ts";
+import { createMysEstimateSource, createMysSearchSource } from "./mys-search-source.ts";
 
 test("旧公开查询恢复三游戏活动和无井号原神入口，保持公告管理、订阅和登录分流", async () => {
   const calls: [string | null, string | null, string | null][] = [];
@@ -53,6 +53,48 @@ test("旧公开查询恢复三游戏活动和无井号原神入口，保持公�
     await official.dispose();
   }
   expect(await official.fallback("#原神活动")).toBeUndefined();
+});
+
+test("资源预估按原作者和官方顺序查询三游戏，跳过错作者和错区帖子", async () => {
+  const requests: string[] = [];
+  const host = {
+    onlineBots: () => [], listGroups: async () => [],
+    sendGroup: async () => { throw new Error("公开查询不得推送"); },
+    deleteMessage: async () => { throw new Error("公开查询不得撤回"); },
+  };
+  const estimate = createMysEstimateSource(async (url, init) => {
+    expect(url.pathname).toBe("/painter/api/user_instant/search/list");
+    expect(init.credentials).toBe("omit");
+    expect(new Headers(init.headers).has("Cookie")).toBe(false);
+    const keyword = url.searchParams.get("keyword")!;
+    requests.push(keyword);
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      keyword, uid: "137101761", size: "20", offset: "0", sort_type: "2",
+    });
+    const game = keyword.startsWith("星") ? 6 : keyword.startsWith("菲") ? 8 : 2;
+    const post = (post_id: string, game_id = game, uid = "137101761", created_at = 12_345) => ({
+      post: { post: { post_id, game_id, uid, created_at, subject: keyword + post_id } },
+    });
+    return Response.json({ retcode: 0, data: { list: [
+      post("23", game, "999"), post("24", 1), post("20"), post("21", game, "137101761", 20_000),
+    ] } });
+  });
+  const official = createOfficialAnnouncements(() => undefined, host, parseAnnouncementConfig(), undefined,
+    undefined, undefined, undefined, undefined, undefined, undefined, estimate);
+  try {
+    expect(await official.fallback("#原石预估")).toBe("原石统计汇总20\nhttps://www.miyoushe.com/ys/article/20");
+    expect(await official.fallback("盘点")).toBe("原石统计汇总20\nhttps://www.miyoushe.com/ys/article/20");
+    expect(await official.fallback("#星铁盘点")).toBe("星琼统计汇总20\nhttps://www.miyoushe.com/sr/article/20");
+    expect(await official.fallback("#星琼盘点")).toBe("星琼统计汇总20\nhttps://www.miyoushe.com/sr/article/20");
+    expect(await official.fallback("#菲林预估")).toBe("菲林统计汇总20\nhttps://www.miyoushe.com/zzz/article/20");
+    expect(await official.fallback("zzz预估")).toBe("菲林统计汇总20\nhttps://www.miyoushe.com/zzz/article/20");
+    for (const input of ["#水晶估算", "#崩坏三预估", "#原石统计", "#原石预估2"]) {
+      expect(await official.fallback(input)).toBeUndefined();
+    }
+    expect(requests).toEqual(["原石统计汇总", "原石统计汇总", "星琼统计汇总", "星琼统计汇总", "菲林统计汇总", "菲林统计汇总"]);
+  } finally {
+    await official.dispose();
+  }
 });
 
 test("旧米游社文章直链只取确切来源与文章 ID", () => {

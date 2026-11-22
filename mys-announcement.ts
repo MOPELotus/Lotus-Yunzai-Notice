@@ -4,8 +4,8 @@ import { numberId, type AnnouncementConfig, type AnnouncementTarget } from "./my
 import { announcementArticleLink, announcementGames, announcementLabels, createAnnouncementSource, type AnnouncementGame,
   type AnnouncementKind, type AnnouncementPushKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
 import type { NoticeRedis } from "./store.ts";
-import { isPrivateMysCommand, parseMysArticleLink, parseMysSearch, parsePublicAnnouncementQuery } from "./mys-public-query.ts";
-import { createMysSearchSource } from "./mys-search-source.ts";
+import { isPrivateMysCommand, parseMysArticleLink, parseMysEstimate, parseMysSearch, parsePublicAnnouncementQuery } from "./mys-public-query.ts";
+import { createMysEstimateSource, createMysSearchSource } from "./mys-search-source.ts";
 
 interface Context {
   readonly isMaster: boolean;
@@ -92,6 +92,7 @@ type PresentList = (game: AnnouncementGame, kind: AnnouncementKind, posts: reado
 export function createOfficialAnnouncements(
   getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, config: AnnouncementConfig, signal?: AbortSignal,
   feed = createAnnouncementSource(), now = Date.now, whenActive?: (start: () => void) => () => void, presentArticle?: PresentArticle, presentList?: PresentList, search = createMysSearchSource(),
+  estimate = createMysEstimateSource(),
 ) {
   const lifecycle = new AbortController();
   const active = signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal;
@@ -310,6 +311,18 @@ export function createOfficialAnnouncements(
     const target = parsePublicAnnouncementQuery(normalizedMessage);
     if (target) return target.list ? list(target.game, target.kind, target.argument)
       : query(target.game, target.kind, target.argument, target.page);
+
+    const estimateGame = parseMysEstimate(normalizedMessage);
+    if (estimateGame) {
+      try {
+        const post = await estimate(estimateGame, active);
+        if (active.aborted) return;
+        return post ? articleReply(estimateGame, post.id, post.title) : "暂无数据。";
+      } catch {
+        if (!active.aborted) return "米游社资源预估暂不可用。";
+      }
+      return;
+    }
 
     if (isPrivateMysCommand(normalizedMessage)) return;
     const link = parseMysArticleLink(normalizedMessage);

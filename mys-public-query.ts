@@ -5,6 +5,15 @@ export const publicMysFeatureNames = ["[notice] 米游社公开查询", "米游�
 const games = { "原神": "gs", "星铁": "sr", "绝区零": "zzz", "官方": "gs" } as const;
 const kinds = { "公告": "notice", "资讯": "info", "活动": "activity" } as const;
 
+export function parseMysEstimate(input: string): AnnouncementGame | undefined {
+  const match = /^#?(原神|原石|星铁|星琼|绝区零|zzz|菲林)?(?:预估|盘点)$/u.exec(input.trim());
+  if (!match) return;
+  const game = match[1];
+  if (game === "星铁" || game === "星琼") return "sr";
+  if (game === "绝区零" || game === "zzz" || game === "菲林") return "zzz";
+  return "gs";
+}
+
 export function parsePublicAnnouncementQuery(input: string): {
   game: AnnouncementGame; kind: AnnouncementKind; list: boolean; page?: number; argument: string;
 } | undefined {
