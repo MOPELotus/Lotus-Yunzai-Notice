@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { CommandRegistry } from "../../lib/commands.ts";
+import type { MessageEvent } from "../../lib/messages.ts";
 import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
 import { configuredAnnouncements, parseAnnouncementConfig } from "./mys-announcement-config.ts";
@@ -440,6 +442,34 @@ test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和�
   expect(await commands["#公告"]()).toBe("当前没有公告。");
   expect(await commands["#历史公告"](currentId)).toBe("没有找到对应的历史公告。");
   expect(JSON.stringify(await commands["#全部历史公告"]("1"))).not.toContain(currentId);
+});
+
+test.skipIf(!available)("旧发布口令可连写正文，保留图文且与带空格指令共用权限", async () => {
+  const registry = new CommandRegistry();
+  registry.registerModule({ name: "@lotus-yunzai/notice", ...createNoticePlugin(() => redis) });
+  const compact = "#发布公告首行\n正文";
+  const file = "https://images.example.invalid/notice.png";
+  const event: MessageEvent = {
+    msg: compact, raw_message: compact, post_type: "message", message_type: "private",
+    isGroup: false, isPrivate: true, isMaster: true, user_id: 20001, reply: () => true,
+    message: [{ type: "text", text: "#发布" }, { type: "text", text: "公告首行\n正文" },
+      { type: "image", file }, { type: "text", text: "图后文字" }],
+  };
+  const fallback = (input: MessageEvent, allowed = true) => registry.dispatchFallback(input, () => allowed, () => true);
+  expect(await registry.dispatch(compact, event)).toBeUndefined();
+  expect(await fallback({ ...event, isMaster: false })).toBe("仅机器人主人可管理公告。");
+  expect(await fallback(event, false)).toBeUndefined();
+  expect(await exec("GET", "notice:current")).toBeNull();
+  expect(await fallback(event)).toContain("公告已发布");
+  expect(await createNoticeStore(redis!).current()).toMatchObject({ content: "首行\n正文[图片]图后文字", segments: [
+    { type: "text", text: "首行\n正文" }, { type: "image", file }, { type: "text", text: "图后文字" },
+  ] });
+  const spaced = "#发布公告 带空格的正文";
+  const direct = { ...event, msg: spaced, raw_message: spaced, message: spaced };
+  expect(await registry.dispatch(spaced, direct)).toContain("公告已发布");
+  expect(await fallback(direct)).toBeUndefined();
+  expect(await exec("LRANGE", "notice:history", "0", "-1")).toHaveLength(1);
+  expect(await fallback({ ...direct, msg: "#编辑公告紧连正文" })).toBeUndefined();
 });
 
 test.skipIf(!available)("沿用旧全局名单和账号配置，筛选真实群列表且并发编辑不丢项", async () => {

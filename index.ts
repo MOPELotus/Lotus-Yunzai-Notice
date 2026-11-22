@@ -21,6 +21,9 @@ interface CommandContext {
 }
 
 type Handler = (argument: string, context: CommandContext) => NoticeReply | Promise<NoticeReply>;
+type NoticeFallbackContext = CommandContext & { readonly normalizedMessage: string };
+type NoticeFallback = (message: string, context: NoticeFallbackContext) =>
+  NoticeDeliveryReply | Promise<NoticeDeliveryReply | undefined> | undefined;
 type Store = ReturnType<typeof createNoticeStore>;
 interface HistoryForward {
   readonly type: "forward";
@@ -31,6 +34,7 @@ interface HistoryForward {
 
 const historyBatchSize = 10;
 const failedGroupLimit = 10;
+const publishCommand = "#发布公告";
 const memberHelp = [
   "#公告 查看当前公告",
   "#历史公告 [编号] 查看历史公告",
@@ -76,6 +80,13 @@ function hostRedis() {
   return (globalThis as { redis?: NoticeRedis }).redis;
 }
 
+function adjacentPublishArgument(message: string) {
+  const input = message.trimStart();
+  if (!input.startsWith(publishCommand)) return;
+  const argument = input.slice(publishCommand.length);
+  if (argument && /^\S/u.test(argument)) return argument.trimEnd();
+}
+
 export function createNoticePlugin(
   getRedis: () => NoticeRedis | undefined = hostRedis,
   deliveryHost?: NoticeDeliveryHost,
@@ -119,10 +130,10 @@ export function createNoticePlugin(
     "#公告帮助": (_argument: string, context: CommandContext) =>
       context?.isMaster === true ? [memberHelp, ownerHelp, ...(deliveryHost ? [ownerDeliveryHelp] : [])].join("\n") : memberHelp,
 
-    "#发布公告": owner((argument, context) => {
+    [publishCommand]: owner((argument, context) => {
       const creator = context.user_id;
       if (!creator || !Number.isSafeInteger(creator) || creator < 1) return "无法确认发布者身份。";
-      const parsed = parseNoticeInput("#发布公告", argument, context.message);
+      const parsed = parseNoticeInput(publishCommand, argument, context.message, true);
       if ("error" in parsed) return parsed.error;
       return withStore(async (store) => {
         const id = await store.publish(parsed.content, String(creator));
@@ -142,10 +153,15 @@ export function createNoticePlugin(
   } satisfies Record<string, (argument: string, context: CommandContext) => NoticeReply | HistoryForward | Promise<NoticeReply | HistoryForward>>;
 
   const targetCommands = Object.assign(createTargetCommands(getRedis, deliveryHost), commands);
-  if (!deliveryHost) return { commands: targetCommands };
+  const fallback: NoticeFallback = (_message, context) => {
+    const argument = adjacentPublishArgument(context.normalizedMessage);
+    if (argument === undefined || signal?.aborted) return;
+    return commands[publishCommand](argument, context);
+  };
+  if (!deliveryHost) return { commands: targetCommands, fallback };
 
   let pushing = false;
-  return { commands: Object.assign(targetCommands, {
+  return { fallback, commands: Object.assign(targetCommands, {
     "#推送公告": owner(async (argument, context) => {
       if (argument.trim()) return "用法：#推送公告";
       if (context.isDelegated) return "请直接发送 #推送公告。";
@@ -269,19 +285,16 @@ function describeReceipt(receipt: DeliveryReceipt): string {
   }
 }
 
-type PublicMysFallback = (message: string, context: { normalizedMessage: string }) => Promise<NoticeDeliveryReply | undefined>;
-
 export function createModule({ groups, noticeGroups = groups, signal, whenNoticeActive }: {
   groups: NoticeDeliveryHost; noticeGroups?: NoticeDeliveryHost; signal?: AbortSignal;
   whenNoticeActive?: (start: () => void) => () => void;
 }):
   ReturnType<typeof createNoticePlugin> & { aliases?: Record<string,string>; dispose?: () => Promise<void>;
-    fallback?: PublicMysFallback;
-    fallbackFeatures?: () => readonly string[];
+    fallbackFeatures?: (context: NoticeFallbackContext) => readonly string[];
   } {
   const module = createNoticePlugin(hostRedis, noticeGroups, signal);
   let aliases: Record<string,string> | undefined;
-  let fallback: PublicMysFallback | undefined;
+  let officialFallback: ((message: string) => Promise<NoticeDeliveryReply | undefined>) | undefined;
   const disposers: (() => Promise<void>)[] = [];
   try {
     const window = configuredNoticeSchedule();
@@ -309,7 +322,7 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
       }, createAnnouncementListRenderer(root));
     Object.assign(module.commands, official.commands);
     aliases = official.aliases;
-    fallback = (_message, context) => official.fallback(context.normalizedMessage);
+    officialFallback = official.fallback;
     disposers.push(official.dispose);
     const expiry = createActivityExpiryNotices(hostRedis, noticeGroups, config, signal, undefined, undefined, whenNoticeActive);
     Object.assign(module.commands, expiry.commands);
@@ -319,7 +332,12 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
   }
   if (!disposers.length) return module;
   return {
-    ...module, aliases, ...(fallback && { fallback, fallbackFeatures: () => publicMysFeatureNames }),
+    ...module, aliases, ...(officialFallback && {
+      fallback: (message: string, context: NoticeFallbackContext) =>
+        module.fallback(message, context) ?? officialFallback?.(context.normalizedMessage),
+      fallbackFeatures: (context: NoticeFallbackContext) =>
+        adjacentPublishArgument(context.normalizedMessage) === undefined ? publicMysFeatureNames : [],
+    }),
     async dispose() { await Promise.all(disposers.map((dispose) => dispose())); },
   };
 }

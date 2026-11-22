@@ -52,6 +52,7 @@ export function parseNoticeInput(
   command: string,
   argument: string,
   message?: string | readonly InboundNoticeSegment[],
+  allowAdjacentText = false,
 ): { content: NoticeReply } | { error: string } {
   if (message === undefined || typeof message === "string") {
     const error = limits([{ type: "text", text: argument }]);
@@ -68,7 +69,7 @@ export function parseNoticeInput(
   }
   const head = leadingText.trimStart();
   const suffix = head.slice(command.length);
-  if (!head.startsWith(command) || (suffix && !/^\s/u.test(suffix))) {
+  if (!head.startsWith(command) || (!allowAdjacentText && suffix && !/^\s/u.test(suffix))) {
     return { error: "请将公告指令放在文字或图片之前。" };
   }
 
