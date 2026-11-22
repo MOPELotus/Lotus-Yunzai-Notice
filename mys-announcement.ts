@@ -1,6 +1,6 @@
 import { Job } from "node-schedule";
 import { noticeAccounts, noticeAdapter, type NoticeAccount, type NoticeDeliveryHost, type NoticeDeliveryReply, type NoticeDeliverySegment } from "./delivery.ts";
-import { numberId, type AnnouncementConfig, type AnnouncementTarget } from "./mys-announcement-config.ts";
+import { numberId, type AnnouncementConfig, type AnnouncementConfigReader, type AnnouncementTarget } from "./mys-announcement-config.ts";
 import { announcementArticleLink, announcementGames, announcementLabels, createAnnouncementSource, type AnnouncementGame,
   type AnnouncementKind, type AnnouncementPushKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
 import type { NoticeRedis } from "./store.ts";
@@ -90,10 +90,12 @@ type PresentList = (game: AnnouncementGame, kind: AnnouncementKind, posts: reado
   signal: AbortSignal) => Promise<NoticeDeliverySegment | undefined>;
 
 export function createOfficialAnnouncements(
-  getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, config: AnnouncementConfig, signal?: AbortSignal,
+  getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, configuration: AnnouncementConfig | AnnouncementConfigReader, signal?: AbortSignal,
   feed = createAnnouncementSource(), now = Date.now, whenActive?: (start: () => void) => () => void, presentArticle?: PresentArticle, presentList?: PresentList, search = createMysSearchSource(),
   estimate = createMysEstimateSource(),
 ) {
+  const readConfig = typeof configuration === "function" ? configuration : () => configuration;
+  const initial = readConfig();
   const lifecycle = new AbortController();
   const active = signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal;
   let pending: ReturnType<typeof poll> | undefined;
@@ -117,7 +119,16 @@ export function createOfficialAnnouncements(
   async function poll(selected: readonly AnnouncementGame[], channels: readonly AnnouncementPushKind[]) {
     const report = { confirmed: 0, rejected: 0, unknown: 0, skipped: 0, failed: 0 };
     const redis = getRedis();
-    if (!redis || active.aborted || config.maxNum === 0) return report;
+    if (!redis || active.aborted) return report;
+    let config: AnnouncementConfig;
+    try {
+      config = readConfig();
+    } catch {
+      console.warn("[notice] 米游社公告推送配置无效，本轮暂停投递。");
+      report.failed++;
+      return report;
+    }
+    if (config.maxNum === 0) return report;
     const online = new Map(noticeAccounts(host).map((account) => [account.botId, account]));
     const groupLists = new Map<number, ReadonlySet<number>>();
     const wall = Math.floor(now() / 1000);
@@ -179,9 +190,17 @@ export function createOfficialAnnouncements(
             const discard = { keys: [key, legacy], arguments: [token, ""] };
             let currentClaim: unknown;
             try {
-              if (!active.aborted) currentClaim = await redis.eval(verifyClaim, claimArgs);
+              if (!active.aborted) {
+                const current = readConfig();
+                const stillConfigured = current === config || (count < current.maxNum && !current.ban[game]?.test(post.title) &&
+                  (await targetsFor(redis, game, kind, current)).some(target => target.botId === botId && target.groupId === groupId));
+                if (stillConfigured) {
+                  currentClaim = await redis.eval(verifyClaim, claimArgs);
+                  if (currentClaim === 1 && current !== readConfig()) currentClaim = undefined;
+                }
+              }
             } catch (error) {
-              // Delivery has not started, so a transient storage error can still release this claim.
+              // Delivery has not started, so a configuration or storage error can release this claim.
               await redis.eval(settle, discard).catch(() => undefined);
               throw error;
             }
@@ -232,7 +251,7 @@ export function createOfficialAnnouncements(
   }
 
   function startTimer() {
-    if (getRedis() && !active.aborted && !timer.schedule(config.cron)) throw new Error("米游社公告推送 cron 无效。");
+    if (getRedis() && !active.aborted && !timer.schedule(initial.cron)) throw new Error("米游社公告推送 cron 无效。");
   }
 
   function cancel() { timer.cancel(); }

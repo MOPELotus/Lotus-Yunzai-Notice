@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis } from "./store.ts";
-import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
+import { configuredAnnouncements, parseAnnouncementConfig } from "./mys-announcement-config.ts";
 import { createAnnouncementSource, readAnnouncementFeed, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
 import { readImage } from "./mys-card-draw.ts";
 import { readPublicMys } from "./mys-public-request.ts";
@@ -1227,6 +1227,49 @@ gsannounceGroup:
   }
 });
 
+test.skipIf(!available)("米游社公告每轮读取 YAML，发送前复核新目标与过滤词，配置错误后可恢复", async () => {
+  const folder = await mkdtemp(join(tmpdir(), "lotus-live-mys-notice-"));
+  const path = join(folder, "config", "mys.pushNews.yaml");
+  const root = pathToFileURL(folder + "/");
+  await mkdir(join(folder, "config", "config"), { recursive: true });
+  await writeFile(join(folder, "config", "config", "mys.pushNews.yaml"), "gsannounceGroup: { '70': [90] }");
+  const source = configuredAnnouncements(root);
+  expect(source()).toBe(source());
+  const prepared = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const sent: [number, number, NoticeDeliveryReply][] = [];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [70], listGroups: async () => [{id: 90}, {id: 91}],
+    async sendGroup(bot, group, message) { sent.push([bot, group, message]); return 901; },
+    async deleteMessage() {},
+  };
+  const now = 1_800_000_000;
+  const service = createOfficialAnnouncements(() => redis, host, source, undefined,
+    async () => [{ id: "2201", created: now - 2, title: "改后过滤" }, { id: "2202", created: now - 1, title: "保留条目" }],
+    () => now * 1000, undefined, async () => { prepared.resolve(); await release.promise; return undefined; });
+  try {
+    const first = service.run(["gs"], ["notice"]);
+    await prepared.promise;
+    await writeFile(path, "gsannounceGroup: { '70': [91] }\nbanWord: { gs: '改后过滤' }\n");
+    release.resolve();
+    expect(await first).toMatchObject({ confirmed: 0, skipped: 2 });
+    expect(sent).toEqual([]);
+    expect(await exec("GET", "lotus-yunzai:notice:mys:gs:delivery:90:2201")).toBeNull();
+    expect(await service.run(["gs"], ["notice"])).toMatchObject({ confirmed: 1, failed: 0 });
+    expect(sent.map(([bot, group, message]) => [bot, group, String(message).includes("保留条目")])).toEqual([[70, 91, true]]);
+    await writeFile(path, "gsannounceGroup: [");
+    expect(await service.run(["gs"], ["notice"])).toMatchObject({ confirmed: 0, failed: 1 });
+    expect(sent).toHaveLength(1);
+    await writeFile(path, "gsannounceGroup: { '70': [90] }");
+    expect(await service.run(["gs"], ["notice"])).toMatchObject({ confirmed: 1, failed: 0 });
+    expect(sent[1]?.[1]).toBe(90);
+  } finally {
+    release.resolve();
+    await service.dispose();
+    await rm(folder, { recursive: true });
+  }
+});
+
 test.skipIf(!available)("米游社订阅命令持久覆盖旧名单，停止后取消正在读取的公告", async () => {
   const config = parseAnnouncementConfig("gsannounceGroup: { '70': [90] }");
   const host: NoticeDeliveryHost = {
@@ -1543,6 +1586,42 @@ srActivityPush: { '70': [91] }
     expect(await service.commands["#原神关闭到期活动预警推送"]!("",admin)).toContain("已关闭");
     expect(await service.commands["#原神开启到期活动"]!("",admin)).toContain("已开启");
   } finally { await service.dispose(); }
+});
+
+test.skipIf(!available)("活动到期从空配置启动，读取新加目标并取消已删除的待发目标", async () => {
+  const folder = await mkdtemp(join(tmpdir(), "lotus-live-mys-expiry-"));
+  const path = join(folder, "config", "mys.pushNews.yaml");
+  await mkdir(join(folder, "config"));
+  const sent: number[] = [];
+  const waiting = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => [70], listGroups: async () => [{id: 90}, {id: 91}],
+    async sendGroup(_bot, group) { sent.push(group); return 901; },
+    async deleteMessage() {},
+  };
+  const now = Date.parse("2026-11-20T11:00:00+08:00");
+  const service = createActivityExpiryNotices(() => redis, host, configuredAnnouncements(pathToFileURL(folder + "/")), undefined,
+    async () => [{ title: "到期活动", subtitle: "到期测试", end: now + 3_600_000 }], () => now,
+    undefined, async () => { waiting.resolve(); await release.promise; });
+  try {
+    await service.run();
+    expect(sent).toEqual([]);
+    await writeFile(path, "gsActivityPush: { '70': [90] }");
+    const first = service.run();
+    await waiting.promise;
+    await writeFile(path, "gsActivityPush: { '70': [91] }");
+    release.resolve();
+    await first;
+    expect(sent).toEqual([]);
+    expect(await exec("KEYS", "lotus-yunzai:notice:mys:expiry:*")).toEqual([]);
+    await service.run();
+    expect(sent).toEqual([91]);
+  } finally {
+    release.resolve();
+    await service.dispose();
+    await rm(folder, { recursive: true });
+  }
 });
 
 test.skipIf(!available)("公告会话快照优先同号 OneBot，Milky 回执绑定原协议和群", async () => {

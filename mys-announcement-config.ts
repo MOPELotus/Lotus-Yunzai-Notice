@@ -16,6 +16,8 @@ export interface AnnouncementConfig {
   readonly activityTargets: Readonly<Record<ActivityGame, readonly AnnouncementTarget[]>>;
 }
 
+export type AnnouncementConfigReader = () => AnnouncementConfig;
+
 const defaultBan = {
   gs: "冒险助力礼包|纪行|预下载|脚本外挂|集中反馈|已开奖|云·原神|魔神任务|传说任务|线下赛|晋级赛|战绩更新|海选赛|邀请赛|积分赛|战绩工具|交流平台|首日赛|线上赛|社区内容|个人专访|全民赛|决赛|总决赛|半决赛|淘汰赛|作品展示|同人|大别野",
   sr: "预下载|脚本外挂|集中反馈|已开奖|问题说明|意见反馈|账号封禁|工具|直播预告|获奖名单|大别野",
@@ -75,13 +77,24 @@ export function parseAnnouncementConfig(yaml = "{}"): AnnouncementConfig {
   return { cron, maxNum, ban, targets, infoTargets, activityTargets };
 }
 
-export function configuredAnnouncements(root: URL): AnnouncementConfig {
+function readAnnouncementYaml(root: URL): string {
   for (const path of ["config/mys.pushNews.yaml", "config/config/mys.pushNews.yaml", "plugins/genshin/config/mys.pushNews.yaml"]) {
     try {
-      return parseAnnouncementConfig(readFileSync(new URL(path, root), "utf8"));
+      return readFileSync(new URL(path, root), "utf8");
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
     }
   }
-  return parseAnnouncementConfig();
+  return "{}";
+}
+
+export function configuredAnnouncements(root: URL): AnnouncementConfigReader {
+  let previous: { yaml: string; config: AnnouncementConfig } | undefined;
+  return () => {
+    const yaml = readAnnouncementYaml(root);
+    if (previous?.yaml === yaml) return previous.config;
+    const config = parseAnnouncementConfig(yaml);
+    previous = { yaml, config };
+    return config;
+  };
 }

@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Job } from "node-schedule";
 import type { NoticeReply } from "./content.ts";
 import { noticeAccounts, type NoticeAccount, type NoticeDeliveryHost } from "./delivery.ts";
-import { numberId, type AnnouncementConfig } from "./mys-announcement-config.ts";
+import { numberId, type AnnouncementConfig, type AnnouncementConfigReader } from "./mys-announcement-config.ts";
 import { effectiveAnnouncementTargets } from "./mys-announcement.ts";
 import { createActivityExpirySource, type ActivityGame, type UpcomingExpiry } from "./mys-activity-source.ts";
 import type { NoticeRedis } from "./store.ts";
@@ -88,11 +88,13 @@ function expiryMessage(game: ActivityGame, event: UpcomingExpiry, now: number): 
 }
 
 export function createActivityExpiryNotices(
-  getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, config: AnnouncementConfig,
+  getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, configuration: AnnouncementConfig | AnnouncementConfigReader,
   signal?: AbortSignal, feed = createActivityExpirySource(), now = Date.now,
   whenActive?: (start: () => void) => () => void,
   wait = (active:AbortSignal) => delay(5000,undefined,{signal:active,ref:false}),
 ) {
+  const readConfig = typeof configuration === "function" ? configuration : () => configuration;
+  const initial = readConfig();
   const lifecycle = new AbortController();
   const active = signal ? AbortSignal.any([signal,lifecycle.signal]) : lifecycle.signal;
   let pending: Promise<void> | undefined, startup: Promise<void> | undefined;
@@ -101,14 +103,14 @@ export function createActivityExpiryNotices(
   const job = new Job(() => { void run(); });
   function arm() {
     if (ready && !active.aborted && !armed && getRedis()) {
-      armed = Boolean(job.schedule(config.cron));
+      armed = Boolean(job.schedule(initial.cron));
       if (!armed) console.warn("[notice] 活动到期推送定时配置无效。");
     }
   }
   function start() {
     if (active.aborted) return;
     ready = true;
-    if (games.some(game => config.activityTargets[game].length)) {
+    if (typeof configuration === "function" || games.some(game => initial.activityTargets[game].length)) {
       arm();
       return;
     }
@@ -117,7 +119,7 @@ export function createActivityExpiryNotices(
       if (!redis) return;
       for (const game of games) {
         if (active.aborted) return;
-        if ((await effectiveAnnouncementTargets(redis,config.activityTargets[game],targetKey(game))).length) {
+        if ((await effectiveAnnouncementTargets(redis,initial.activityTargets[game],targetKey(game))).length) {
           arm();
           return;
         }
@@ -132,6 +134,7 @@ export function createActivityExpiryNotices(
   async function poll() {
     const redis = getRedis(), at = now();
     if (!redis || active.aborted || local(at).getUTCHours() < 10) return;
+    const config = readConfig();
     const date = chinaDay(at);
     const online = new Map(noticeAccounts(host).map(account=>[account.botId,account]));
     const routes = new Map<number,Map<number,Set<ActivityGame>>>();
@@ -175,11 +178,12 @@ export function createActivityExpiryNotices(
     }
     for (const target of destinations) {
       if (active.aborted || chinaDay(now()) !== date) return;
-      await notifyTarget(redis,target,date,sources);
+      await notifyTarget(redis,target,date,sources,config);
     }
   }
 
-  async function notifyTarget(redis: NoticeRedis, target:ActivityDestination, date:string, sources: Map<ActivityGame,readonly UpcomingExpiry[]>) {
+  async function notifyTarget(redis: NoticeRedis, target:ActivityDestination, date:string, sources: Map<ActivityGame,readonly UpcomingExpiry[]>,
+    config: AnnouncementConfig) {
     const {account, groupId, raw, queue, selected} = target;
     const botId = account.botId, oldKey = legacyQueue(botId);
     const at = now();
@@ -204,6 +208,13 @@ export function createActivityExpiryNotices(
         try {
           await wait(active);
           active.throwIfAborted();
+          const current = readConfig();
+          if (current !== config && !(await effectiveAnnouncementTargets(redis, current.activityTargets[game], targetKey(game)))
+            .some(target => target.botId === botId && target.groupId === groupId)) {
+            retry = true;
+            await redis.eval(settleActivity,{keys:[receipt],arguments:[token,result]});
+            continue;
+          }
           const currentClaim = await redis.eval(verifyActivityClaim,claimArgs);
           if (currentClaim === activityDisabled) {
             retry = true;
@@ -211,6 +222,11 @@ export function createActivityExpiryNotices(
           }
           if (currentClaim !== 1) return;
           active.throwIfAborted();
+          if (current !== readConfig()) {
+            retry = true;
+            await redis.eval(settleActivity,{keys:[receipt],arguments:[token,result]});
+            continue;
+          }
           const deliveryAt = now();
           if (event.end <= deliveryAt || chinaDay(deliveryAt) !== date) {
             await redis.eval(settleActivity,{keys:[receipt],arguments:[token,result]});
