@@ -542,6 +542,46 @@ test.skipIf(!available)("即时推送记录逐群确认，只重试明确未发�
   expect(receipts).toContain("群 10003 · 机器人 20001 · 发出结果未确认");
 });
 
+test.skipIf(!available)("手动公告在投递前回复、分段报进度并限量列出失败群", async () => {
+  const client = redis!;
+  const id = await createNoticeStore(client).publish("隔离公告", "20001");
+  const bots = Array.from({ length: 13 }, (_, index) => 20001 + index);
+  await exec("SADD", "notice:whitelist", ...bots.map(botId => String(botId - 10000)));
+  const events: string[] = [];
+  const host: NoticeDeliveryHost = {
+    onlineBots: () => bots,
+    async listGroups(botId) { return [{ id: botId - 10000 }]; },
+    async sendGroup(_botId, groupId) {
+      events.push(`发往 ${groupId}`);
+      if (groupId === 10001) return 50001;
+      if (groupId === 10002) throw Object.assign(new Error("未发送"), { delivery: "not-sent" });
+      throw new Error("网关超时");
+    },
+    async deleteMessage() {},
+  };
+  const push = createNoticePlugin(() => client, host).commands["#推送公告"]!;
+  const context = { isMaster: true, reply(message: string, quote?: boolean) {
+    expect(quote).toBe(true);
+    events.push(message);
+    if (message.includes("3/13")) throw new Error("回执发送失败");
+    return true;
+  } };
+  const delegated = { ...context, isDelegated: true };
+  expect(await push("", delegated)).toContain("请直接发送");
+  expect(events).toEqual([]);
+  const result = await push("", context);
+  expect(events[0]).toContain(`公告 ${id} 开始推送，共 13 个账号、13 个目标群`);
+  expect(events[1]).toBe("发往 10001");
+  expect(events.filter(value => value.startsWith("推送进度"))).toEqual([3, 6, 9, 12].map(count =>
+    `推送进度 ${count}/13 · 确认送达 1。`));
+  expect(result).toContain("机器人 20001 · 1/1");
+  expect(result).toContain("机器人 20013 · 0/1");
+  expect(result).toContain("20002:10002（确认未发出）");
+  expect(result).toContain("20011:10011（发出结果未确认）");
+  expect(result).not.toContain("20012:10012");
+  expect(result).toContain("其余 2 个群见逐群回执");
+});
+
 test.skipIf(!available)("投递回执写入失败后停止，下一轮跳过无法确认的目标", async () => {
   const client = redis!;
   const noticeId = (await createNoticeStore(client).publish("模拟断开", "20001"))!;

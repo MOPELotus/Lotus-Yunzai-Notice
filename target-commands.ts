@@ -68,7 +68,8 @@ export function createTargetCommands(getRedis: () => NoticeRedis | undefined, ho
           }
           await store.setAccounts([account], setting === "间隔" ? "pushInterval" : "retryCount", value);
         } else return "配置项可选启用、禁用、间隔或重试。";
-        return `公告账号 ${account} 的配置已保存。`;
+        const saved = `公告账号 ${account} 的配置已保存。`;
+        return setting === "重试" ? `${saved}重试次数保留供旧配置读取，推送由逐群回执决定。` : saved;
       }
 
       const global = (await store.settings()).global;
@@ -89,7 +90,7 @@ export function createTargetCommands(getRedis: () => NoticeRedis | undefined, ho
         const fields = [String(account.botId), account.adapter === "milky" ? "Milky" : "OneBot", config.enabled ? "启用" : "禁用"];
         if (action !== "配置") fields.push(groups ? `${groups.length} 个群` : "群列表不可用");
         if (action === "列表" || action === "配置") fields.push(`间隔 ${config.pushInterval ?? 2000} 毫秒`);
-        if (action === "配置") fields.push(`重试 ${config.retryCount ?? 3}`);
+        if (action === "配置") fields.push(`重试 ${config.retryCount ?? 3}（旧配置）`);
         if (action === "配置" || action === "状态") fields.push(`白名单 ${config.whitelist.length} · 黑名单 ${config.blacklist.length}`);
         rows.push(fields.join(" · "));
       }

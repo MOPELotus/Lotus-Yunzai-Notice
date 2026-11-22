@@ -38,8 +38,11 @@ type Result = {
   receipts: DeliveryReceipt[];
   alreadyClaimed: number;
   discoveryFailures: number;
+  accountTotals: ReadonlyMap<number, number>;
   stopped?: "cancelled" | "notice-changed" | "storage-error";
 };
+
+export type NoticePushProgress = (noticeId: string, processed: number, selected: number, confirmed: number, accounts: number) => Promise<void>;
 
 type RecallOptions = { noticeId?: string; groupId?: number; signal?: AbortSignal };
 type RecallResult = {
@@ -182,12 +185,14 @@ export function createNoticeDelivery(
   }
 
   return {
-    async push(signal?: AbortSignal, scheduled?: Notice, accounts?: readonly NoticeAccount[]): Promise<Result> {
-      const result: Result = { selected: 0, receipts: [], alreadyClaimed: 0, discoveryFailures: 0 };
+    async push(signal?: AbortSignal, scheduled?: Notice, accounts?: readonly NoticeAccount[], progress?: NoticePushProgress): Promise<Result> {
+      const accountTotals = new Map<number, number>();
+      const result: Result = { selected: 0, receipts: [], alreadyClaimed: 0, discoveryFailures: 0, accountTotals };
       if (signal?.aborted) return { ...result, stopped: "cancelled" };
       const notice = scheduled ?? await notices.current();
       if (!notice) return result;
-      result.noticeId = notice.id;
+      const noticeId = notice.id;
+      result.noticeId = noticeId;
       const destinations = new Map<number, { groupId: number; interval: number; account: NoticeAccount }>();
       for (const account of accounts ?? noticeAccounts(host)) {
         const { botId } = account;
@@ -202,6 +207,7 @@ export function createNoticeDelivery(
             const groupId = Number(selected);
             if (!destinations.has(groupId)) {
               destinations.set(groupId, { account, groupId, interval: settings.account.pushInterval ?? defaultInterval });
+              accountTotals.set(botId, (accountTotals.get(botId) ?? 0) + 1);
             }
           }
         } catch {
@@ -209,6 +215,16 @@ export function createNoticeDelivery(
         }
       }
       result.selected = destinations.size;
+      if (result.selected > 0) await report(0, 0);
+
+      let confirmed = 0;
+      let processed = 0;
+      const checkpoint = Math.ceil(result.selected / 5);
+      async function report(processed: number, confirmed: number) {
+        if (!progress || signal?.aborted) return;
+        try { await progress(noticeId, processed, result.selected, confirmed, accountTotals.size); }
+        catch { /* A failed progress reply must not interrupt group delivery. */ }
+      }
 
       const lastSend = new Map<number, number>();
       for (const { account, groupId, interval } of destinations.values()) {
@@ -237,6 +253,8 @@ export function createNoticeDelivery(
           if (claim === -1) return { ...result, stopped: "notice-changed" };
           if (claim === 0) {
             result.alreadyClaimed++;
+            processed++;
+            if (processed < result.selected && processed % checkpoint === 0) await report(processed, confirmed);
             continue;
           }
           if (claim !== 1) return { ...result, stopped: "storage-error" };
@@ -251,6 +269,9 @@ export function createNoticeDelivery(
           if (saved !== 1) return { ...result, stopped: "storage-error" };
           result.receipts.push(receipt);
           lastSend.set(botId, Date.now());
+          if (receipt.state === "confirmed") confirmed++;
+          processed++;
+          if (processed < result.selected && processed % checkpoint === 0) await report(processed, confirmed);
         } catch {
           return { ...result, stopped: "storage-error" };
         }

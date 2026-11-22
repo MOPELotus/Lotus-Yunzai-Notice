@@ -16,6 +16,8 @@ interface CommandContext {
   readonly user_id?: number;
   readonly message?: string | readonly InboundNoticeSegment[];
   readonly raw_message?: string;
+  readonly isDelegated?: boolean;
+  readonly reply?: (message: string, quote?: boolean) => boolean | Promise<boolean>;
 }
 
 type Handler = (argument: string, context: CommandContext) => NoticeReply | Promise<NoticeReply>;
@@ -28,6 +30,7 @@ interface HistoryForward {
 }
 
 const historyBatchSize = 10;
+const failedGroupLimit = 10;
 const memberHelp = [
   "#公告 查看当前公告",
   "#历史公告 [编号] 查看历史公告",
@@ -143,15 +146,21 @@ export function createNoticePlugin(
 
   let pushing = false;
   return { commands: Object.assign(targetCommands, {
-    "#推送公告": owner(async (argument) => {
+    "#推送公告": owner(async (argument, context) => {
       if (argument.trim()) return "用法：#推送公告";
+      if (context.isDelegated) return "请直接发送 #推送公告。";
       if (pushing) return "正在推送公告，请稍候。";
       const redis = getRedis();
       if (!redis) return "公告存储未连接。";
 
       pushing = true;
       try {
-        const result = await createNoticeDelivery(redis, deliveryHost).push(signal);
+        const reply = context.reply;
+        const result = await createNoticeDelivery(redis, deliveryHost).push(signal, undefined, undefined,
+          reply && (async (id, processed, selected, confirmed, accounts) => {
+            await reply(processed === 0 ? `公告 ${id} 开始推送，共 ${accounts} 个账号、${selected} 个目标群。`
+              : `推送进度 ${processed}/${selected} · 确认送达 ${confirmed}。`, true);
+          }));
         if (!result.noticeId) return result.stopped === "cancelled" ? "推送已中断。" : "当前没有可推送的公告。";
         const count = (state: DeliveryReceipt["state"]) =>
           result.receipts.filter((receipt) => receipt.state === state).length;
@@ -159,6 +168,23 @@ export function createNoticePlugin(
           `公告 ${result.noticeId} · ${result.selected} 个目标群`,
           `确认送达 ${count("confirmed")} · 未发出 ${count("not-sent")} · 结果未确认 ${count("unknown")}`,
         ];
+        const confirmedByAccount = new Map<number, number>();
+        const failed: string[] = [];
+        for (const receipt of result.receipts) {
+          if (receipt.state === "confirmed") {
+            confirmedByAccount.set(receipt.botId, (confirmedByAccount.get(receipt.botId) ?? 0) + 1);
+          } else {
+            failed.push(`${receipt.botId}:${receipt.groupId}（${describeReceipt(receipt)}）`);
+          }
+        }
+        if (result.accountTotals.size) {
+          lines.push("按账号确认送达：", ...[...result.accountTotals].map(([botId, total]) =>
+            `机器人 ${botId} · ${confirmedByAccount.get(botId) ?? 0}/${total}`));
+        }
+        if (failed.length) {
+          lines.push(`未确认送达的群：${failed.slice(0, failedGroupLimit).join("、")}`);
+          if (failed.length > failedGroupLimit) lines.push(`其余 ${failed.length - failedGroupLimit} 个群见逐群回执。`);
+        }
         if (result.alreadyClaimed) lines.push(`已跳过 ${result.alreadyClaimed} 个已有投递记录的群。`);
         if (result.discoveryFailures) lines.push(`${result.discoveryFailures} 个机器人未能读取目标群。`);
         if (result.stopped === "notice-changed") lines.push("公告发生变更，已停止后续发送。");
