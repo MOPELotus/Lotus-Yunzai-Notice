@@ -371,10 +371,14 @@ test.skipIf(!available)("公告账号管理沿用旧哈希，只处理在线账�
   await exec("HSET", offline, "enabled", "false");
   await exec("SADD", "notice:blacklist", "7799");
   expect(await command("#公告账号列表")).toContain("20001 · OneBot · 启用 · 2 个群 · 间隔 1500 毫秒");
-  expect(await command("#公告账号统计")).toContain("启用 2 · 群数 4 · 可推送 3");
+  const statistics = await command("#公告账号统计");
+  expect(statistics).toContain("启用 2 · 群数 4 · 可推送 3");
+  expect(statistics).toContain("20001 · OneBot · 启用 · 2 个群 · 可推送 1 个群");
+  expect(statistics).toContain("20002 · OneBot · 启用 · 2 个群 · 可推送 2 个群");
   expect(await command("#公告账号禁用", "", false)).toContain("仅机器人主人");
   expect(await command("#公告账号禁用")).toContain("已禁用 2/2");
   expect(await command("#公告账号状态")).toContain("20001 · OneBot · 禁用");
+  expect(await command("#公告账号统计")).toContain("20001 · OneBot · 禁用 · 2 个群 · 可推送 0 个群");
   expect(await command("#公告账号配置", "20002 启用 是")).toContain("已保存");
   expect(await command("#公告账号配置", "20001 间隔 500")).toContain("已保存");
   expect(await command("#公告账号配置", "20001 重试 0")).toContain("已保存");

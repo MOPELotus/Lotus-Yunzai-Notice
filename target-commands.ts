@@ -83,12 +83,14 @@ export function createTargetCommands(getRedis: () => NoticeRedis | undefined, ho
           failures++;
           return undefined;
         });
+        const pushable = groups && action === "统计" ? selectNoticeGroups(settings, groups.map(({ id }) => id)).length : undefined;
         if (groups) {
           memberships += groups.length;
-          available += selectNoticeGroups(settings, groups.map(({ id }) => id)).length;
+          available += pushable ?? 0;
         }
         const fields = [String(account.botId), account.adapter === "milky" ? "Milky" : "OneBot", config.enabled ? "启用" : "禁用"];
         if (action !== "配置") fields.push(groups ? `${groups.length} 个群` : "群列表不可用");
+        if (pushable !== undefined) fields.push(`可推送 ${pushable} 个群`);
         if (action === "列表" || action === "配置") fields.push(`间隔 ${config.pushInterval ?? 2000} 毫秒`);
         if (action === "配置") fields.push(`重试 ${config.retryCount ?? 3}（旧配置）`);
         if (action === "配置" || action === "状态") fields.push(`白名单 ${config.whitelist.length} · 黑名单 ${config.blacklist.length}`);
