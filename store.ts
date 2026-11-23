@@ -22,6 +22,10 @@ export interface Notice {
   readonly segmentSource?: string;
 }
 
+export type NoticeWriteReceipt =
+  | { readonly state: "confirmed"; readonly notice: Notice }
+  | { readonly state: "missing" | "rejected" | "unknown" };
+
 function activeNotice(id: string, entry: Record<string, string>): Notice | undefined {
   if (!entry.content?.trim() || !entry.timestamp || !entry.creator ||
       ["已撤回", "recalled"].includes(entry.status ?? "")) return;
@@ -42,16 +46,16 @@ end
 
 local op, prefix, new_id, content, creator, timestamp, now, segments = unpack(ARGV)
 if not expect_type(KEYS[1], 'string') or not expect_type(KEYS[2], 'list') then
-  return redis.error_reply('notice keys have an unexpected type')
+  return 'rejected'
 end
 
 local current = redis.call('GET', KEYS[1])
 if current and not string.match(current, '^%d%d%d%d%d[A-Z][A-Z][A-Z]$') then
-  return redis.error_reply('invalid current notice identifier')
+  return 'rejected'
 end
 local old = current and prefix .. current
 if old and not expect_type(old, 'hash') then
-  return redis.error_reply('notice record has an unexpected type')
+  return 'rejected'
 end
 local status = old and redis.call('HGET', old, 'status')
 local alive = old and status ~= '已撤回' and status ~= 'recalled' and
@@ -77,14 +81,16 @@ if op == 'publish' then
   if segments ~= '' then redis.call('HSET', target, 'segments', segments) end
   redis.call('EXPIRE', target, 2592000)
   redis.call('SET', KEYS[1], new_id)
-  return new_id
+  return {new_id, creator, timestamp, '当前'}
 end
 
 if not alive then return false end
 if op == 'edit' then
+  local metadata = redis.call('HMGET', old, 'creator', 'timestamp')
   redis.call('HSET', old, 'content', content)
   if segments == '' then redis.call('HDEL', old, 'segments')
   else redis.call('HSET', old, 'segments', segments) end
+  return {current, metadata[1], metadata[2], status or ''}
 elseif op == 'recall' then
   archive('已撤回')
   redis.call('DEL', KEYS[1])
@@ -96,19 +102,49 @@ export function createNoticeStore(redis: NoticeRedis) {
   async function mutate(
     op: "publish" | "edit" | "recall",
     id = "",
-    content: NoticeReply = "",
+    { text, segments } = { text: "", segments: "" },
     creator = "",
     time = new Date(),
   ) {
     const iso = new Intl.DateTimeFormat("sv-SE", {
       timeZone: "Asia/Shanghai", dateStyle: "short", timeStyle: "medium",
     }).format(time);
-    const { text, segments } = encodeNoticeContent(content);
-    const result = await redis.eval(mutateScript, {
+    return redis.eval(mutateScript, {
       keys: [currentKey, historyKey],
       arguments: [op, announcementPrefix, id, text, creator, iso, String(time.getTime()), segments],
     });
-    return typeof result === "string" ? result : undefined;
+  }
+
+  async function write(content: NoticeReply, creator?: string): Promise<NoticeWriteReceipt> {
+    const op = creator === undefined ? "edit" : "publish";
+    const { text, segments } = encodeNoticeContent(content);
+    try {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const id = op === "publish" ? newNoticeId() : "";
+        const receipt = await mutate(op, id, { text, segments }, creator);
+        if (receipt === "collision" && op === "publish") continue;
+        if (receipt === "rejected") return { state: "rejected" };
+        if ((receipt === null || receipt === false) && op === "edit") return { state: "missing" };
+        if (Array.isArray(receipt) && receipt.length === 4) {
+          const [savedId, savedCreator, timestamp, status] = receipt;
+          if (typeof savedId === "string" && validId.test(savedId) && (!id || (id === savedId && creator === savedCreator)) &&
+              typeof savedCreator === "string" && typeof timestamp === "string" && typeof status === "string") {
+            const notice = activeNotice(savedId, { creator: savedCreator, timestamp, status, content: text, segments });
+            if (notice) return { state: "confirmed", notice };
+          }
+        }
+        // A missing or malformed receipt does not rule out a committed write.
+        return { state: "unknown" };
+      }
+      return { state: "rejected" };
+    } catch {
+      return { state: "unknown" };
+    }
+  }
+
+  function newNoticeId() {
+    const bytes = crypto.getRandomValues(new Uint32Array(4));
+    return String(10_000 + bytes[0]! % 90_000) + String.fromCharCode(...[...bytes.slice(1)].map((value) => 65 + value % 26));
   }
 
   return {
@@ -130,18 +166,11 @@ export function createNoticeStore(redis: NoticeRedis) {
       });
     },
 
-    async publish(content: NoticeReply, creator: string) {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const bytes = crypto.getRandomValues(new Uint32Array(4));
-        const id = String(10_000 + bytes[0]! % 90_000) +
-          String.fromCharCode(...[...bytes.slice(1)].map((value) => 65 + value % 26));
-        const result = await mutate("publish", id, content, creator);
-        if (result !== "collision") return result;
-      }
-      throw new Error("无法分配公告编号");
+    write,
+    async recall() {
+      const receipt = await mutate("recall");
+      if (receipt === "rejected") throw new Error("公告存储键无效");
+      return typeof receipt === "string" && validId.test(receipt);
     },
-
-    edit: (content: NoticeReply) => mutate("edit", "", content),
-    recall: () => mutate("recall"),
   };
 }

@@ -3,10 +3,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { CommandRegistry } from "../../lib/commands.ts";
+import { CommandRegistry, sendCommandReply } from "../../lib/commands.ts";
 import type { MessageEvent } from "../../lib/messages.ts";
 import { createModule, createNoticePlugin } from "./index.ts";
-import { createNoticeStore, type NoticeRedis } from "./store.ts";
+import { createNoticeStore, type NoticeRedis, type NoticeWriteReceipt } from "./store.ts";
 import { configuredAnnouncements, parseAnnouncementConfig } from "./mys-announcement-config.ts";
 import { createAnnouncementSource, readAnnouncementFeed, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
 import { readImage } from "./mys-card-draw.ts";
@@ -267,6 +267,11 @@ async function exec(...arguments_: string[]): Promise<unknown> {
   return JSON.parse(out);
 }
 
+function savedId(receipt: NoticeWriteReceipt) {
+  if (receipt.state !== "confirmed") throw new Error("测试公告写入未确认");
+  return receipt.notice.id;
+}
+
 beforeAll(async () => {
   if (!available) return;
   temp = await mkdtemp(join(tmpdir(), "lotus-notice-"));
@@ -451,6 +456,10 @@ test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和�
     commands["#发布公告"]("并行发布", owner),
   ]);
   expect(replies.every((reply) => typeof reply === "string" && /公告已发布，编号 \d{5}[A-Z]{3}/u.test(reply))).toBe(true);
+  expect(replies[0]).toContain("初次发布");
+  expect(replies[0]).not.toContain("并行发布");
+  expect(replies[1]).toContain("并行发布");
+  expect(replies[1]).not.toContain("初次发布");
   const currentId = await exec("GET", "notice:current") as string;
   expect(replies.some((reply) => typeof reply === "string" && reply.includes(currentId))).toBe(true);
   expect(await exec("HGET", `notice:ann:${oldId}`, "status")).toBe("已归档");
@@ -459,7 +468,7 @@ test.skipIf(!available)("兼容旧公告键，主人可原子发布、编辑和�
   expect(JSON.stringify(await commands["#全部历史公告"]("1"))).toContain(oldId);
   expect(JSON.stringify(await commands["#全部历史公告"]("1"))).not.toContain("99999AAA");
 
-  expect(await commands["#编辑公告"]("编辑后的公告", owner)).toBe("公告已更新。");
+  expect(await commands["#编辑公告"]("编辑后的公告", owner)).toContain("公告已更新。");
   expect(await commands["#公告"]()).toContain("编辑后的公告");
   expect(await commands["#撤回公告"]("", owner)).toBe("当前公告已撤回。");
   expect(await commands["#公告"]()).toBe("当前没有公告。");
@@ -483,16 +492,99 @@ test.skipIf(!available)("旧发布口令可连写正文，保留图文且与带�
   expect(await fallback({ ...event, isMaster: false })).toBe("仅机器人主人可管理公告。");
   expect(await fallback(event, false)).toBeUndefined();
   expect(await exec("GET", "notice:current")).toBeNull();
-  expect(await fallback(event)).toContain("公告已发布");
+  expect(JSON.stringify(await fallback(event))).toContain("【当前公告】");
   expect(await createNoticeStore(redis!).current()).toMatchObject({ content: "首行\n正文[图片]图后文字", segments: [
     { type: "text", text: "首行\n正文" }, { type: "image", file }, { type: "text", text: "图后文字" },
   ] });
   const spaced = "#发布公告 带空格的正文";
   const direct = { ...event, msg: spaced, raw_message: spaced, message: spaced };
-  expect(await registry.dispatch(spaced, direct)).toContain("公告已发布");
+  expect(await registry.dispatch(spaced, direct)).toContain("带空格的正文");
   expect(await fallback(direct)).toBeUndefined();
   expect(await exec("LRANGE", "notice:history", "0", "-1")).toHaveLength(1);
   expect(await fallback({ ...direct, msg: "#编辑公告紧连正文" })).toBeUndefined();
+});
+
+test.skipIf(!available)("公告实际指令收到成功回执后回显同一份图文，拒绝和回执丢失时各只写一次", async () => {
+  const client = redis!;
+  let writes = 0;
+  let loseStorageReply = false;
+  let loseChatReply = false;
+  const registry = new CommandRegistry();
+  registry.registerModule({ name: "@lotus-yunzai/notice", ...createNoticePlugin(() => ({
+    ...client,
+    async eval(script, input) {
+      writes++;
+      const receipt = await client.eval(script, input);
+      if (loseStorageReply) throw new Error("测试断开：执行完毕后收不到存储回执");
+      return receipt;
+    },
+  })) });
+  const replies: { message: Parameters<MessageEvent["reply"]>[0]; quote: boolean }[] = [];
+  const file = "base64://AQI=";
+  const image = { type: "image", file } as const;
+  async function dispatch(text: string, isMaster = true, withImage = false) {
+    replies.length = 0;
+    const event: MessageEvent = {
+      msg: text, raw_message: text, post_type: "message", message_type: "private", isGroup: false,
+      isPrivate: true, isMaster, user_id: 20001,
+      message: withImage ? [{ type: "text", text }, image, { type: "text", text: "\n图片之后" }] : text,
+      reply(message, quote = false) {
+        replies.push({ message, quote });
+        if (loseChatReply && quote) throw new Error("测试断开：收不到私聊回执");
+        return true;
+      },
+    };
+    const result = await registry.dispatch(text, event);
+    if (result !== undefined) await sendCommandReply(event, result);
+  }
+
+  await dispatch("#发布公告 越权正文", false);
+  expect(replies).toEqual([{ message: "仅机器人主人可管理公告。", quote: false }]);
+  expect(writes).toBe(0);
+
+  await dispatch("#编辑公告 还没有公告");
+  expect(replies).toEqual([{ message: "当前没有可编辑的公告。", quote: false }]);
+  expect(writes).toBe(1);
+
+  await dispatch("#发布公告 图片之前", true, true);
+  const id = await exec("GET", "notice:current");
+  expect(replies).toEqual([
+    { message: `公告已发布，编号 ${id}。`, quote: false },
+    { message: [{ type: "text", text: expect.stringContaining(`【当前公告】 ${id}`) },
+      { type: "text", text: "图片之前" }, image, { type: "text", text: "\n图片之后" }], quote: false },
+  ]);
+  expect(writes).toBe(2);
+
+  loseChatReply = true;
+  await dispatch("#编辑公告 替换图片前的正文", true, true);
+  expect(replies).toEqual([
+    { message: "公告已更新。", quote: true },
+    { message: [{ type: "text", text: expect.stringContaining(`【当前公告】 ${id}`) },
+      { type: "text", text: "替换图片前的正文" }, image, { type: "text", text: "\n图片之后" }], quote: false },
+  ]);
+  expect(writes).toBe(3);
+  expect(await exec("LRANGE", "notice:history", "0", "-1")).toEqual([]);
+
+  await exec("SET", "notice:history", "错误的存储类型");
+  await dispatch("#发布公告 明确拒绝");
+  expect(replies).toEqual([{ message: "公告发布失败。", quote: false }]);
+  await dispatch("#编辑公告 明确拒绝");
+  expect(replies).toEqual([{ message: "公告编辑失败。", quote: false }]);
+  expect(writes).toBe(5);
+  expect(await exec("GET", "notice:current")).toBe(id);
+  await exec("DEL", "notice:history");
+
+  loseStorageReply = true;
+  await dispatch("#发布公告 已发布但回执丢失");
+  expect(replies).toEqual([{ message: "公告发布结果未确认，请先发送 #公告 核对。", quote: false }]);
+  expect(writes).toBe(6);
+  expect(await exec("LRANGE", "notice:history", "0", "-1")).toEqual([id]);
+  await dispatch("#编辑公告 已编辑但回执丢失");
+  expect(replies).toEqual([{ message: "公告编辑结果未确认，请先发送 #公告 核对。", quote: false }]);
+  expect(writes).toBe(7);
+  await dispatch("#公告", false);
+  expect(replies[0]?.message).toContain("已编辑但回执丢失");
+  expect(writes).toBe(7);
 });
 
 test.skipIf(!available)("沿用旧全局名单和账号配置，筛选真实群列表且并发编辑不丢项", async () => {
@@ -544,7 +636,7 @@ test.skipIf(!available)("沿用旧全局名单和账号配置，筛选真实群�
 
 test.skipIf(!available)("即时推送记录逐群确认，只重试明确未发出的请求", async () => {
   const store = createNoticeStore(redis!);
-  const noticeId = (await store.publish("正文 [CQ:at,qq=all]\n第二行", "20001"))!;
+  const noticeId = savedId(await store.write("正文 [CQ:at,qq=all]\n第二行", "20001"));
   await exec("SADD", "notice:whitelist", "10001", "10002", "10003", "10004");
   const attempts: Array<readonly [number, number]> = [];
   let resumableError = true;
@@ -597,7 +689,7 @@ test.skipIf(!available)("即时推送记录逐群确认，只重试明确未发�
 
 test.skipIf(!available)("手动公告在投递前回复、分段报进度并限量列出失败群", async () => {
   const client = redis!;
-  const id = await createNoticeStore(client).publish("隔离公告", "20001");
+  const id = savedId(await createNoticeStore(client).write("隔离公告", "20001"));
   const bots = Array.from({ length: 13 }, (_, index) => 20001 + index);
   await exec("SADD", "notice:whitelist", ...bots.map(botId => String(botId - 10000)));
   const events: string[] = [];
@@ -637,7 +729,7 @@ test.skipIf(!available)("手动公告在投递前回复、分段报进度并限�
 
 test.skipIf(!available)("投递回执写入失败后停止，下一轮跳过无法确认的目标", async () => {
   const client = redis!;
-  const noticeId = (await createNoticeStore(client).publish("模拟断开", "20001"))!;
+  const noticeId = savedId(await createNoticeStore(client).write("模拟断开", "20001"));
   const attempts: number[] = [];
   const host: NoticeDeliveryHost = {
     onlineBots: () => [20001],
@@ -673,7 +765,7 @@ test.skipIf(!available)("投递回执写入失败后停止，下一轮跳过无�
 test.skipIf(!available)("并发推送只发一次，公告改动和调用方中断会停止后续发送", async () => {
   const client = redis!;
   const store = createNoticeStore(client);
-  await store.publish("初版内容", "20001");
+  await store.write("初版内容", "20001");
   const sent: Array<{ groupId: number; content: NoticeDeliveryReply }> = [];
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -689,7 +781,7 @@ test.skipIf(!available)("并发推送只发一次，公告改动和调用方中�
         started.resolve();
         await release.promise;
       } else if (mode === "edit") {
-        await store.edit("新版内容");
+        await store.write("新版内容");
       } else {
         abort.abort();
       }
@@ -721,7 +813,7 @@ test.skipIf(!available)("并发推送只发一次，公告改动和调用方中�
 
 test.skipIf(!available)("宿主停止信号沿推送命令传递，已确认回执保留且不再发送下一群", async () => {
   const client = redis!;
-  const noticeId = (await createNoticeStore(client).publish("停止信号测试", "20001"))!;
+  const noticeId = savedId(await createNoticeStore(client).write("停止信号测试", "20001"));
   const controller = new AbortController();
   const groups: number[] = [];
   const host: NoticeDeliveryHost = {
@@ -750,7 +842,7 @@ test.skipIf(!available)("宿主停止信号沿推送命令传递，已确认回�
 test.skipIf(!available)("主人可按历史回执撤回指定群，保留原发送账号及结果", async () => {
   const client = redis!;
   const store = createNoticeStore(client);
-  const oldId = (await store.publish("历史公告", "20001"))!;
+  const oldId = savedId(await store.write("历史公告", "20001"));
   const deletions: Array<readonly [number, number]> = [];
   let connected = false;
   const host: NoticeDeliveryHost = {
@@ -777,7 +869,7 @@ test.skipIf(!available)("主人可按历史回执撤回指定群，保留原发�
 
   expect(await commands["#撤回公告"]("", owner)).toBe("当前公告已撤回。");
   expect(deletions).toEqual([]);
-  const newId = (await store.publish("新公告", "20001"))!;
+  const newId = savedId(await store.write("新公告", "20001"));
   expect(await recall("", owner)).toContain(`公告 ${newId} 没有可撤回`);
   expect(await recall(oldId, guest)).toContain("仅机器人主人");
   expect(await recall(`${oldId} 10001`, owner)).toContain("撤回已确认 1");
@@ -801,7 +893,7 @@ test.skipIf(!available)("主人可按历史回执撤回指定群，保留原发�
 
 test.skipIf(!available)("并发撤回、宿主取消和回执落盘失败均保留最多一次尝试", async () => {
   const client = redis!;
-  const noticeId = (await createNoticeStore(client).publish("撤回操作测试", "20001"))!;
+  const noticeId = savedId(await createNoticeStore(client).write("撤回操作测试", "20001"));
   const deletions: number[] = [];
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -904,7 +996,7 @@ test("沿用旧定时字段，兼容默认窗口与旧短写法", () => {
 test.skipIf(!available)("北京时间触发实际定时投递，并发和同分钟重启只执行一次", async () => {
   const client = redis!;
   const store = createNoticeStore(client);
-  const noticeId = (await store.publish("工作日定时推送", "20001"))!;
+  const noticeId = savedId(await store.write("工作日定时推送", "20001"));
   const timer = fakeScheduleClock("2026-11-19T07:59:00+08:00");
   const window = parseNoticeSchedule("enableSchedule: true\nscheduleTime: '8:00-8:00'")!;
   const requests: number[] = [];
@@ -947,7 +1039,7 @@ test.skipIf(!available)("北京时间触发实际定时投递，并发和同分�
 test.skipIf(!available)("启动不会补跑错过的窗口，公告换版不会替换已选择的定时快照", async () => {
   const client = redis!;
   const store = createNoticeStore(client);
-  await store.publish("定时目标", "20001");
+  await store.write("定时目标", "20001");
   const now = fakeScheduleClock("2026-11-19T08:01:00+08:00");
   const window = parseNoticeSchedule("scheduleTime: '8:00-8:00'")!;
   const host: NoticeDeliveryHost = {
@@ -961,7 +1053,7 @@ test.skipIf(!available)("启动不会补跑错过的窗口，公告换版不会�
     ...client,
     async eval(script, options) {
       if (!swapped && options.keys[0] === "notice:schedule:2026-11-20") {
-        await store.publish("新的非计划公告", "20001");
+        await store.write("新的非计划公告", "20001");
         swapped = true;
       }
       return client.eval(script, options);
@@ -982,7 +1074,7 @@ test.skipIf(!available)("启动不会补跑错过的窗口，公告换版不会�
 
 test.skipIf(!available)("定时槽内等待网关绑定，不提前占用当天投递，过期后不补发", async () => {
   const client = redis!;
-  const noticeId = (await createNoticeStore(client).publish("冷启动公告", "20001"))!;
+  const noticeId = savedId(await createNoticeStore(client).write("冷启动公告", "20001"));
   const window = parseNoticeSchedule("scheduleTime: '8:00-8:00'")!;
   const timer = fakeScheduleClock("2026-11-19T08:00:00+08:00");
   const firstDay = "notice:schedule:2026-11-19";
@@ -1018,7 +1110,7 @@ test.skipIf(!available)("定时槽内等待网关绑定，不提前占用当天�
     });
     expect(requests).toEqual([10001]);
 
-    const nextNoticeId = (await createNoticeStore(client).publish("下一天公告", "20001"))!;
+    const nextNoticeId = savedId(await createNoticeStore(client).write("下一天公告", "20001"));
     bound = false;
     timer.advance("2026-11-20T08:00:00+08:00");
     await waitFor(() => expect(timer.planned).toEqual(Array(2).fill(Date.parse("2026-11-20T08:00:05+08:00"))));
@@ -1042,7 +1134,7 @@ test.skipIf(!available)("定时槽内等待网关绑定，不提前占用当天�
 
 test.skipIf(!available)("关闭时等待在途确认，重启跳过状态已开始的同一计划", async () => {
   const client = redis!;
-  const noticeId = (await createNoticeStore(client).publish("关闭定时测试", "20001"))!;
+  const noticeId = savedId(await createNoticeStore(client).write("关闭定时测试", "20001"));
   const timer = fakeScheduleClock("2026-11-19T08:00:00+08:00");
   const window = parseNoticeSchedule("scheduleTime: '8:00-8:00'")!;
   const started = Promise.withResolvers<void>();
@@ -1127,7 +1219,7 @@ test.skipIf(!available)("发布、读取、推送和编辑按顺序保留公告�
   };
 
   expect(await commands["#发布公告"]("", { ...mixed, isMaster: false })).toContain("仅机器人主人");
-  expect(await commands["#发布公告"](prefix + caption, mixed)).toContain("公告已发布");
+  expect(JSON.stringify(await commands["#发布公告"](prefix + caption, mixed))).toContain("公告已发布");
   const current = (await catalog.current())!;
   expect(current.content).toBe(prefix + "[图片]" + caption);
   expect(await exec("HGET", "notice:ann:" + current.id, "content")).toBe(current.content);
@@ -1150,10 +1242,10 @@ test.skipIf(!available)("发布、读取、推送和编辑按顺序保留公告�
     { type: "text", text: "【公告通知】\n" }, ...body, { type: "text", text: "\n" + current.timestamp },
   ]);
 
-  expect(await commands["#编辑公告"]("", {
+  expect(JSON.stringify(await commands["#编辑公告"]("", {
     ...owner,
     message: [{ type: "text", text: "#编辑公告" }, { type: "image", file: inline }],
-  })).toBe("公告已更新。");
+  }))).toContain("公告已更新。");
   expect(await commands["#公告"]()).toEqual([
     { type: "text", text: `【当前公告】 ${current.id}\n${current.timestamp}\n状态 当前\n发布者 20001\n` },
     { type: "image", file: inline },
@@ -1169,14 +1261,14 @@ test.skipIf(!available)("发布、读取、推送和编辑按顺序保留公告�
   ]] });
 
   const plain = (await catalog.current())!;
-  expect(await commands["#编辑公告"]("等号 = 逗号 , & []\n尾行", owner)).toBe("公告已更新。");
+  expect(await commands["#编辑公告"]("等号 = 逗号 , & []\n尾行", owner)).toContain("公告已更新。");
   expect(await exec("HGET", "notice:ann:" + plain.id, "segments")).toBeNull();
   expect(await commands["#公告"]()).toContain("等号 = 逗号 , & []\n尾行");
 });
 
 test.skipIf(!available)("不可重放的图片不会覆盖公告，旧文字和已损坏结构仍可按原文查看", async () => {
   const client = redis!;
-  const current = await createNoticeStore(client).publish("旧文字 [CQ:image,file=legacy]", "20001");
+  const current = savedId(await createNoticeStore(client).write("旧文字 [CQ:image,file=legacy]", "20001"));
   const { commands } = createNoticePlugin(() => client);
   const owner = { isMaster: true, user_id: 20001 };
 
@@ -1193,7 +1285,7 @@ test.skipIf(!available)("不可重放的图片不会覆盖公告，旧文字和�
 
   await exec("HSET", "notice:ann:" + current, "segments", '[{"type":"image","file":"https://images.example.invalid/stale.png"}]');
   expect(await commands["#公告"]()).toContain("旧文字 [CQ:image,file=legacy]");
-  expect(await commands["#编辑公告"]("清理旧结构", owner)).toBe("公告已更新。");
+  expect(await commands["#编辑公告"]("清理旧结构", owner)).toContain("公告已更新。");
   expect(await exec("HGET", "notice:ann:" + current, "segments")).toBeNull();
 });
 
@@ -1202,7 +1294,7 @@ test.skipIf(!available)("图片替换不改变文字预览时，定时器和投�
   const store = createNoticeStore(client);
   const original = "https://images.example.invalid/old.png";
   const replacement = "https://images.example.invalid/new.png";
-  const id = (await store.publish([{ type: "image", file: original }], "20001"))!;
+  const id = savedId(await store.write([{ type: "image", file: original }], "20001"));
   const scheduled = fakeScheduleClock("2026-11-19T07:59:00+08:00");
   const window = parseNoticeSchedule("scheduleTime: '8:00-8:00'")!;
   const sent: NoticeDeliveryReply[] = [];
@@ -1211,7 +1303,7 @@ test.skipIf(!available)("图片替换不改变文字预览时，定时器和投�
     listGroups: async () => [{ id: 10001 }, { id: 10002 }],
     async sendGroup(_bot, _group, value) {
       sent.push(value);
-      await store.edit([{ type: "image", file: original }]);
+      await store.write([{ type: "image", file: original }]);
       return 70001;
     },
     async deleteMessage() {},
@@ -1221,7 +1313,7 @@ test.skipIf(!available)("图片替换不改变文字预览时，定时器和投�
     ...client,
     async eval(script, options) {
       if (!swapped && options.keys[0] === "notice:schedule:2026-11-19") {
-        expect(await store.edit([{ type: "image", file: replacement }])).toBe(id);
+        expect(savedId(await store.write([{ type: "image", file: replacement }]))).toBe(id);
         swapped = true;
       }
       return client.eval(script, options);
@@ -1719,7 +1811,7 @@ test.skipIf(!available)("活动到期从空配置启动，读取新加目标并�
 
 test.skipIf(!available)("公告会话快照优先同号 OneBot，Milky 回执绑定原协议和群", async () => {
   const client = redis!;
-  const noticeId = (await createNoticeStore(client).publish("通知", "20001"))!;
+  const noticeId = savedId(await createNoticeStore(client).write("通知", "20001"));
   await exec("SADD", "notice:whitelist", "10001", "10002", "10003");
   const attempts: string[] = [];
   const recalls: unknown[][] = [];

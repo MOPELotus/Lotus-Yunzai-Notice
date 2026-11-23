@@ -55,11 +55,11 @@ const ownerDeliveryHelp = [
   "#公告账号配置 [机器人QQ 启用/禁用/间隔/重试 值]",
 ].join("\n");
 
-function format(item: Notice, title: string): NoticeReply {
+function format(item: Notice, title: string, prefix = ""): NoticeReply {
   const heading = [`【${title}】 ${item.id}`, item.timestamp];
   if (item.status) heading.push(`状态 ${item.status}`);
   heading.push(`发布者 ${item.creator}`);
-  return decorateNotice(item.content, item.segments, heading.join("\n") + "\n");
+  return decorateNotice(item.content, item.segments, prefix + heading.join("\n") + "\n");
 }
 
 function historyNode(item: Notice): NoticeReply {
@@ -99,6 +99,27 @@ export function createNoticePlugin(
     return handler(createNoticeStore(redis)).catch(() => "公告存储操作失败，请稍后再试。");
   }
 
+  async function writeNotice(store: Store, content: NoticeReply, context: CommandContext, creator?: string): Promise<NoticeReply> {
+    const editing = creator === undefined;
+    const verb = editing ? "编辑" : "发布";
+    const result = await store.write(content, creator);
+    if (result.state === "missing") return "当前没有可编辑的公告。";
+    if (result.state === "rejected") return `公告${verb}失败。`;
+    if (result.state !== "confirmed") return `公告${verb}结果未确认，请先发送 #公告 核对。`;
+
+    const notice = result.notice;
+    const confirmation = editing ? "公告已更新。" : `公告已发布，编号 ${notice.id}。`;
+    if (context.reply) {
+      try {
+        await context.reply(confirmation, editing);
+      } catch {
+        // A lost chat acknowledgement cannot undo the saved notice.
+      }
+      return format(notice, "当前公告");
+    }
+    return format(notice, "当前公告", confirmation + "\n");
+  }
+
   const commands = {
     "#公告": () => withStore(async (store) => {
       const current = await store.current();
@@ -136,17 +157,13 @@ export function createNoticePlugin(
       if (!creator || !Number.isSafeInteger(creator) || creator < 1) return "无法确认发布者身份。";
       const parsed = parseNoticeInput(publishCommand, argument, context.message, true);
       if ("error" in parsed) return parsed.error;
-      return withStore(async (store) => {
-        const id = await store.publish(parsed.content, String(creator));
-        return id ? `公告已发布，编号 ${id}。发送 #公告 查看。` : "公告发布失败。";
-      });
+      return withStore((store) => writeNotice(store, parsed.content, context, String(creator)));
     }),
 
     "#编辑公告": owner((argument, context) => {
       const parsed = parseNoticeInput("#编辑公告", argument, context.message);
       if ("error" in parsed) return parsed.error;
-      return withStore(async (store) =>
-        await store.edit(parsed.content) ? "公告已更新。" : "当前没有可编辑的公告。");
+      return withStore((store) => writeNotice(store, parsed.content, context));
     }),
 
     "#撤回公告": owner(() => withStore(async (store) =>
