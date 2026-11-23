@@ -7,7 +7,7 @@ import { createArticleSource } from "./mys-article-source.ts";
 import { renderOfficialArticle } from "./mys-article-card.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { publicMysFeatureNames } from "./mys-public-query.ts";
-import { configuredNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
+import { configuredNoticeLogLevel, configuredNoticeSchedule, noticeLogger, startNoticeScheduler } from "./schedule.ts";
 import { createTargetCommands } from "./target-commands.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
 
@@ -91,6 +91,7 @@ export function createNoticePlugin(
   getRedis: () => NoticeRedis | undefined = hostRedis,
   deliveryHost?: NoticeDeliveryHost,
   signal?: AbortSignal,
+  log = noticeLogger("info"),
 ) {
   function withStore<T extends NoticeReply | HistoryForward>(handler: (store: Store) => Promise<T>): Promise<T | string> | string {
     const redis = getRedis();
@@ -173,10 +174,12 @@ export function createNoticePlugin(
       try {
         const reply = context.reply;
         const result = await createNoticeDelivery(redis, deliveryHost).push(signal, undefined, undefined,
-          reply && (async (id, processed, selected, confirmed, accounts) => {
-            await reply(processed === 0 ? `公告 ${id} 开始推送，共 ${accounts} 个账号、${selected} 个目标群。`
-              : `推送进度 ${processed}/${selected} · 确认送达 ${confirmed}。`, true);
-          }));
+          async (id, processed, selected, confirmed, accounts) => {
+            const text = processed === 0 ? `公告 ${id} 开始推送，共 ${accounts} 个账号、${selected} 个目标群。`
+              : `推送进度 ${processed}/${selected} · 确认送达 ${confirmed}。`;
+            log(processed === 0 ? "info" : "debug", text);
+            await reply?.(text, true);
+          });
         if (!result.noticeId) return result.stopped === "cancelled" ? "推送已中断。" : "当前没有可推送的公告。";
         const count = (state: DeliveryReceipt["state"]) =>
           result.receipts.filter((receipt) => receipt.state === state).length;
@@ -184,6 +187,8 @@ export function createNoticePlugin(
           `公告 ${result.noticeId} · ${result.selected} 个目标群`,
           `确认送达 ${count("confirmed")} · 未发出 ${count("not-sent")} · 结果未确认 ${count("unknown")}`,
         ];
+        log(result.stopped === "storage-error" ? "error" : result.stopped || result.discoveryFailures ? "warn" : "info",
+          `${lines[0]}。${lines[1]}。`);
         const confirmedByAccount = new Map<number, number>();
         const failed: string[] = [];
         for (const receipt of result.receipts) {
@@ -209,6 +214,7 @@ export function createNoticePlugin(
         lines.push(`发送 #公告推送回执 ${result.noticeId} 查看逐群回执。`);
         return lines.join("\n");
       } catch {
+        log("error", "公告推送未完成，请查看投递回执。");
         return "公告推送未完成，请查看投递回执。";
       } finally {
         pushing = false;
@@ -292,7 +298,10 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
   ReturnType<typeof createNoticePlugin> & { aliases?: Record<string,string>; dispose?: () => Promise<void>;
     fallbackFeatures?: (context: NoticeFallbackContext) => readonly string[];
   } {
-  const module = createNoticePlugin(hostRedis, noticeGroups, signal);
+  let log = noticeLogger("info");
+  try { log = noticeLogger(configuredNoticeLogLevel()); }
+  catch { log("warn", "无法读取独立公告日志配置，使用默认级别 info。"); }
+  const module = createNoticePlugin(hostRedis, noticeGroups, signal, log);
   let aliases: Record<string,string> | undefined;
   let officialFallback: ((message: string) => Promise<NoticeDeliveryReply | undefined>) | undefined;
   const disposers: (() => Promise<void>)[] = [];
@@ -302,14 +311,14 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
       let stop: (() => Promise<void>) | undefined;
       let disposed = false;
       const launch = () => {
-        if (!disposed && !signal?.aborted) stop = startNoticeScheduler(hostRedis, noticeGroups, window, signal);
+        if (!disposed && !signal?.aborted) stop = startNoticeScheduler(hostRedis, noticeGroups, window, signal, undefined, log);
       };
       const cancel = whenNoticeActive?.(launch);
       if (!whenNoticeActive) launch();
       disposers.push(async () => { disposed = true; cancel?.(); await stop?.(); });
     }
   } catch {
-    console.warn("[notice] 无法读取公告定时配置，定时推送未启动。");
+    log("warn", "无法读取公告定时配置，定时推送未启动。");
   }
   try {
     const root = new URL("../../", import.meta.url);

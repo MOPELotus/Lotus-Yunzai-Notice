@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +17,7 @@ import { createActivityExpiryNotices } from "./mys-activity.ts";
 import { readUpcomingExpiry, type ActivityGame } from "./mys-activity-source.ts";
 import { createNoticeDelivery, type NoticeDeliveryHost, type NoticeDeliveryReply } from "./delivery.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
-import { configuredNoticeSchedule, parseNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
+import { configuredNoticeLogLevel, configuredNoticeSchedule, noticeLogger, parseNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
 
 test("米游社详情保留官方图文顺序并排除无法信任的内容", () => {
   const base = "https://upload-bbs.miyoushe.com/";
@@ -306,24 +306,28 @@ test("公告自动推送读取旧目录的默认和覆盖配置，显式文件�
   const lower = join(fixture, "plugins/notice-plugin/config");
   const current = join(fixture, "config/notice.yaml");
   const explicit = join(fixture, "explicit.yaml");
-  const defaults = 'enableSchedule: true\r\nscheduleTime: "8:00-8:30"\r\n';
+  const defaults = 'enableSchedule: true\r\nscheduleTime: "8:00-8:30"\r\nlogger: debug\r\n';
   try {
     expect(configuredNoticeSchedule(root, "")).toBeUndefined();
     await Promise.all([mkdir(legacy, { recursive: true }), mkdir(lower, { recursive: true }),
       mkdir(join(fixture, "config"))]);
     await writeFile(join(legacy, "config_default.yaml"), defaults);
     expect(configuredNoticeSchedule(root, "")).toEqual({ start: 480, end: 510 });
+    expect(configuredNoticeLogLevel(root, "")).toBe("debug");
     await writeFile(join(legacy, "config.yaml"), 'scheduleTime: "11:10-11:12"\n');
     expect(configuredNoticeSchedule(root, "")).toEqual({ start: 670, end: 672 });
     await writeFile(join(legacy, "config.yaml"), "enableSchedule: false\n");
     expect(configuredNoticeSchedule(root, "")).toBeUndefined();
     await writeFile(join(lower, "config.yaml"), 'scheduleTime: "11:10-11:12"\n');
     expect(() => configuredNoticeSchedule(root, "")).toThrow("两处旧公告定时配置不一致");
+    expect(() => configuredNoticeLogLevel(root, "")).toThrow("两处旧公告日志级别不一致");
     await writeFile(current, "enableSchedule: false\n");
     expect(configuredNoticeSchedule(root, "")).toBeUndefined();
+    expect(configuredNoticeLogLevel(root, "")).toBe("info");
     expect(() => configuredNoticeSchedule(root, explicit)).toThrow("ENOENT");
-    await writeFile(explicit, 'scheduleTime: "2:05-2:05"\n');
+    await writeFile(explicit, 'scheduleTime: "2:05-2:05"\nlogger: error\n');
     expect(configuredNoticeSchedule(root, explicit)).toEqual({ start: 125, end: 125 });
+    expect(configuredNoticeLogLevel(root, explicit)).toBe("error");
     expect(await readFile(join(legacy, "config_default.yaml"), "utf8")).toBe(defaults);
     await rm(current);
     await rm(legacy, { recursive: true });
@@ -331,6 +335,21 @@ test("公告自动推送读取旧目录的默认和覆盖配置，显式文件�
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
+});
+
+test("独立公告日志等级过滤低等级消息且继续使用宿主日志", () => {
+  const info = spyOn(console, "info").mockImplementation(() => {});
+  const warning = spyOn(console, "warn").mockImplementation(() => {});
+  const error = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const log = noticeLogger("warn");
+    log("info", "开始推送");
+    log("warn", "目标发现异常");
+    log("error", "投递记录写入异常");
+    expect(info).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith("[notice] 目标发现异常");
+    expect(error).toHaveBeenCalledWith("[notice] 投递记录写入异常");
+  } finally { info.mockRestore(); warning.mockRestore(); error.mockRestore(); }
 });
 
 test.skipIf(!available)("公告账号管理沿用旧哈希，只处理在线账号与可核实的 ALL 目标", async () => {
