@@ -6,7 +6,7 @@ import { createAnnouncementListRenderer } from "./mys-list-card.ts";
 import { createArticleSource } from "./mys-article-source.ts";
 import { renderOfficialArticle } from "./mys-article-card.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
-import { publicMysFeatureNames } from "./mys-public-query.ts";
+import { legacyMysSubscription, publicMysFeatureNames } from "./mys-public-query.ts";
 import { configuredNoticeLogLevel, configuredNoticeSchedule, noticeLogger, startNoticeScheduler } from "./schedule.ts";
 import { createTargetCommands } from "./target-commands.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
@@ -320,7 +320,7 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
   catch { log("warn", "无法读取独立公告日志配置，使用默认级别 info。"); }
   const module = createNoticePlugin(hostRedis, noticeGroups, signal, log);
   let aliases: Record<string,string> | undefined;
-  let officialFallback: ((message: string) => Promise<NoticeDeliveryReply | undefined>) | undefined;
+  let officialFallback: ((message: string, context: NoticeFallbackContext) => Promise<NoticeDeliveryReply | undefined>) | undefined;
   const disposers: (() => Promise<void>)[] = [];
   try {
     const window = configuredNoticeSchedule();
@@ -360,9 +360,10 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
   return {
     ...module, aliases, ...(officialFallback && {
       fallback: (message: string, context: NoticeFallbackContext) =>
-        module.fallback(message, context) ?? officialFallback?.(context.normalizedMessage),
+        module.fallback(message, context) ?? officialFallback?.(context.normalizedMessage, context),
       fallbackFeatures: (context: NoticeFallbackContext) =>
-        adjacentPublishArgument(context.normalizedMessage) === undefined ? publicMysFeatureNames : [],
+        adjacentPublishArgument(context.normalizedMessage) !== undefined || legacyMysSubscription(context.normalizedMessage)
+          ? [] : publicMysFeatureNames,
     }),
     async dispose() { await Promise.all(disposers.map((dispose) => dispose())); },
   };

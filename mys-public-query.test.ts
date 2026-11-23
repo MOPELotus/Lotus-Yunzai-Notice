@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
+import { CommandRegistry } from "../../lib/commands.ts";
+import { normalizeGameCommand } from "../../lib/command-prefix.ts";
+import type { MessageEvent } from "../../lib/messages.ts";
+import { createModule, createNoticePlugin } from "./index.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { parseAnnouncementConfig } from "./mys-announcement-config.ts";
 import { createAnnouncementSource } from "./mys-announcement-source.ts";
 import { parseMysArticleLink, parseMysSearch, publicMysFeatureNames } from "./mys-public-query.ts";
 import { readOfficialArticle } from "./mys-article-source.ts";
 import { createMysEstimateSource, createMysSearchSource } from "./mys-search-source.ts";
+import type { NoticeRedis } from "./store.ts";
 
 test("旧公开查询恢复三游戏活动和无井号原神入口，保持公告管理、订阅和登录分流", async () => {
   const calls: [string | null, string | null, string | null][] = [];
@@ -163,5 +168,96 @@ test("米游社搜索维持原排序和旧结果偏移，登录、签到与面�
     expect(details).toEqual([["gs", "123"], ["gs", "432"], ["gs", "432"], ["sr", "765"]]);
   } finally {
     await official.dispose();
+  }
+});
+
+test("旧多井号、前导零与列表尾号经宿主派发沿用同游戏原资讯查询", async () => {
+  const groups = {
+    onlineBots: () => [], listGroups: async () => [],
+    sendGroup: async () => { throw new Error("公开查询不得推送"); },
+    deleteMessage: async () => { throw new Error("公开查询不得撤回"); },
+  };
+  const calls: Array<[string, string | undefined, number | undefined]> = [];
+  const official = createOfficialAnnouncements(() => undefined, groups, parseAnnouncementConfig(), undefined,
+    async (game, _signal, kind, count) => {
+      calls.push([game, kind, count]);
+      return [{ id: "21", title: "第一条", created: 100 }, { id: "22", title: "第二条", created: 90 }];
+    });
+  const base = createNoticePlugin(() => undefined, groups);
+  const registry = new CommandRegistry();
+  registry.registerModule({ name: "@lotus-yunzai/notice", aliases: official.aliases,
+    commands: { ...base.commands, ...official.commands },
+    fallback: (message, context) => base.fallback(message, context) ?? official.fallback(context.normalizedMessage, context),
+  });
+  async function dispatch(message: string, allowed = () => true) {
+    const event = normalizeGameCommand({ post_type: "message", msg: message, raw_message: message, message, message_type: "group",
+      isGroup: true, isPrivate: false, isMaster: false, user_id: 42, group_id: 90, self_id: 70,
+      reply: async () => true });
+    return await registry.dispatch(event.msg, event, allowed) ?? await registry.dispatchFallback(event, allowed, () => false);
+  }
+  try {
+    expect(await dispatch("#公告")).toBe("公告存储未连接。");
+    expect(await dispatch("##公告")).toContain("原神公告");
+    expect(await dispatch("##原神公告")).toContain("第一条");
+    expect(await dispatch("###星铁资讯2")).toContain("第二条");
+    expect(await dispatch("#原神公告01")).toContain("第一条");
+    expect(await dispatch("#原神公告列表2")).toContain("原神公告列表");
+    expect(await dispatch("##%活动列表")).toBeUndefined();
+    expect(await dispatch("%活动列表")).toContain("绝区零活动列表");
+    expect(await dispatch("#原神公告2abc")).toBeUndefined();
+    expect(await dispatch("##发布公告")).toBeUndefined();
+    expect(await dispatch("##推送公告")).toBeUndefined();
+    expect(await dispatch("##原神公告", () => false)).toBeUndefined();
+    expect(calls).toEqual([["gs", "notice", 20], ["gs", "notice", 20], ["sr", "info", 20],
+      ["gs", "notice", 20], ["gs", "notice", 5], ["zzz", "activity", 5]]);
+  } finally {
+    await official.dispose();
+  }
+});
+
+test("旧多井号订阅复用群管理、同会话目标和现有功能开关", async () => {
+  const groups = {
+    onlineBots: () => [70], listGroups: async () => [{ id: 90 }],
+    sendGroup: async () => { throw new Error("订阅设置不得推送"); },
+    deleteMessage: async () => { throw new Error("订阅设置不得撤回"); },
+  };
+  const writes: unknown[] = [];
+  const redis: NoticeRedis = {
+    get: async () => null, hGetAll: async () => ({}), lRange: async () => [],
+    eval: async (_script, options) => { writes.push(options); return 1; },
+  };
+  const official = createOfficialAnnouncements(() => redis, groups, parseAnnouncementConfig(), undefined,
+    undefined, undefined, () => () => {});
+  const registered = createModule({ groups, whenNoticeActive: () => () => {} });
+  const registry = new CommandRegistry();
+  registry.registerModule({ name: "@lotus-yunzai/notice", commands: official.commands, aliases: official.aliases,
+    fallback: (_message, context) => official.fallback(context.normalizedMessage, context),
+    fallbackFeatures: registered.fallbackFeatures,
+  });
+  const base: MessageEvent = { post_type: "message", msg: "", raw_message: "", message: "", message_type: "group", isGroup: true, isPrivate: false,
+    isMaster: false, user_id: 42, group_id: 90, self_id: 70, reply: async () => true };
+  const admin = { ...base, member: { is_admin: true, is_owner: false } };
+  async function dispatch(message: string, event = base, allowed: (names: readonly string[]) => boolean = () => true) {
+    const normalized = normalizeGameCommand({ ...event, msg: message, raw_message: message, message });
+    return await registry.dispatch(normalized.msg, normalized, allowed) ??
+      await registry.dispatchFallback(normalized, allowed, () => false);
+  }
+  try {
+    expect(await dispatch("##开启公告推送")).toContain("只有群管理员");
+    expect(await dispatch("##开启公告推送", { ...admin, message_type: "private", isGroup: false, isPrivate: true })).toContain("请在群聊");
+    expect(await dispatch("##开启公告推送", { ...admin, self_id: 71 })).toContain("无法确认");
+    expect(await dispatch("##开启公告推送", admin, () => false)).toBeUndefined();
+    expect(await dispatch("##开启公告推送 90", admin)).toBeUndefined();
+    expect(writes).toEqual([]);
+    const onlyNotice = (names: readonly string[]) => !names.includes("[notice] 米游社公开查询");
+    expect(await dispatch("##开启公告推送", admin, onlyNotice)).toBe(await dispatch("#开启公告推送", admin, onlyNotice));
+    expect(await dispatch("###星铁关闭资讯推送", admin, onlyNotice)).toBe("星铁资讯推送已关闭。");
+    expect(writes).toEqual([
+      { keys: ["lotus-yunzai:notice:mys:gs:targets"], arguments: ["70:90", "on"] },
+      { keys: ["lotus-yunzai:notice:mys:gs:targets"], arguments: ["70:90", "on"] },
+      { keys: ["lotus-yunzai:notice:mys:sr:info-targets"], arguments: ["70:90", "off"] },
+    ]);
+  } finally {
+    await Promise.all([official.dispose(), registered.dispose?.()]);
   }
 });

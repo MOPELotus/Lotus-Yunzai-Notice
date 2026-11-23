@@ -4,7 +4,7 @@ import { numberId, type AnnouncementConfig, type AnnouncementConfigReader, type 
 import { announcementArticleLink, announcementGames, announcementLabels, createAnnouncementSource, type AnnouncementGame,
   type AnnouncementKind, type AnnouncementPushKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
 import type { NoticeRedis } from "./store.ts";
-import { isPrivateMysCommand, parseMysArticleLink, parseMysEstimate, parseMysSearch, parsePublicAnnouncementQuery } from "./mys-public-query.ts";
+import { isPrivateMysCommand, legacyMysSubscription, parseMysArticleLink, parseMysEstimate, parseMysSearch, parsePublicAnnouncementQuery } from "./mys-public-query.ts";
 import { createMysEstimateSource, createMysSearchSource } from "./mys-search-source.ts";
 
 interface Context {
@@ -325,8 +325,10 @@ export function createOfficialAnnouncements(
     return article?.pictures.length ? [{ type: "text", text }, ...article.pictures] : text;
   }
 
-  async function fallback(normalizedMessage: string) {
+  async function fallback(normalizedMessage: string, context?: Context) {
     if (active.aborted) return;
+    const subscription = legacyMysSubscription(normalizedMessage);
+    if (subscription && context) return commands[subscription]?.("", context);
     const target = parsePublicAnnouncementQuery(normalizedMessage);
     if (target) return target.list ? list(target.game, target.kind, target.argument)
       : query(target.game, target.kind, target.argument, target.page);

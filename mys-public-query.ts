@@ -17,14 +17,22 @@ export function parseMysEstimate(input: string): AnnouncementGame | undefined {
 export function parsePublicAnnouncementQuery(input: string): {
   game: AnnouncementGame; kind: AnnouncementKind; list: boolean; page?: number; argument: string;
 } | undefined {
-  const match = /^(#*)(官方|原神|星铁|绝区零)?(公告|资讯|活动)(列表|\d+)?(?:\s+(\d+))?$/u.exec(input.trim());
+  const match = /^(#*)(官方|原神|星铁|绝区零)?(公告|资讯|活动)((?:列表|[0-9])*)(?:\s+(\d+))?$/u.exec(input.trim());
   if (!match) return;
-  const [, hashes, prefix, label, selection, argument = ""] = match;
+  const [, hashes = "", prefix, label, selection = "", argument = ""] = match;
   const kind = kinds[label as keyof typeof kinds];
-  // The direct command registry already owns explicit announcements and information, including #公告.
-  if (hashes && kind !== "activity") return;
-  const page = selection && selection !== "列表" ? Number(selection) : undefined;
-  return { game: prefix ? games[prefix as keyof typeof games] : "gs", kind, list: selection === "列表", page, argument };
+  const list = selection.includes("列表");
+  const page = selection && !list ? Number(selection) : undefined;
+  // Forward old spellings that cannot be registered as literal commands.
+  const paddedPage = page !== undefined && page > 0 && selection.startsWith("0");
+  const legacy = !argument && (hashes.length > 1 || (list && selection !== "列表") || paddedPage);
+  if (hashes && kind !== "activity" && !legacy) return;
+  return { game: prefix ? games[prefix as keyof typeof games] : "gs", kind, list, page, argument };
+}
+
+export function legacyMysSubscription(input: string) {
+  const match = /^#{2,}((?:原神|星铁|绝区零)?(?:开启|关闭)(?:公告|资讯)推送)$/u.exec(input.trim());
+  if (match?.[1]) return "#" + match[1];
 }
 
 const articleHosts = new Set(["www.miyoushe.com", "miyoushe.com", "bbs.miyoushe.com", "bbs.mihoyo.com"]);
