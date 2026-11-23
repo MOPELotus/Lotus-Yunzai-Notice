@@ -154,6 +154,61 @@ test("米游社详情保留内联强调，公开别名仅在接口不可用时�
   expect(result?.blocks[1]).toEqual({ type: "text", text: "普通链接", align: "left", heading: false });
 });
 
+test("旧米游社表情按游戏的已核清单接回正文行内，未知、越界和坏标记保留", async () => {
+  const icons = (game: string) => `https://bbs-static.miyoushe.com/fixture/emoticon-${game}.png`;
+  const calls: string[] = [];
+  const source = createArticleSource((async (input, init) => {
+    const url = new URL(String(input));
+    const game = url.searchParams.get("gids") ?? "";
+    expect(init?.credentials).toBe("omit");
+    if (url.pathname === "/misc/api/emoticon_set") {
+      calls.push(game);
+      expect(init?.redirect).toBe("manual");
+      if (game === "8") return new Response(null, { status: 302, headers: { Location: "http://127.0.0.1/catalogue" } });
+      return Response.json({ retcode: 0, data: { list: [
+        { icon: icons(game), list: [
+          { name: "表情", icon: icons(game) },
+          { name: "越界", icon: "https://bbs-static.miyoushe.com.example.invalid/fixture.png" },
+          { name: "凭据", icon: "https://user@bbs-static.miyoushe.com/fixture.png" },
+        ] },
+        { list: [{ name: "缺分组", icon: icons(game) }] },
+      ] } });
+    }
+    expect(url.pathname).toBe("/post/wapi/getPostFull");
+    const id = url.searchParams.get("post_id");
+    const tagged = '<p class="ql-align-center">甲<strong>_(表情)</strong>乙 _(未知) _(越界) _(凭据) _(缺分组) _(坏_(表情)) _(未闭合</p>';
+    const content = id === "401" ? "没有表情"
+      : id === "402" ? JSON.stringify({ text: "_(表情)", imgs: [] })
+      : tagged;
+    return Response.json({ retcode: 0, data: { post: { post: {
+      post_id: id, game_id: Number(game), subject: "表情夹具", created_at: 1_790_000_000, content,
+    } } } });
+  }) as typeof fetch);
+  const signal = new AbortController().signal;
+  expect((await source("gs", "401", signal))?.blocks[0]).toMatchObject({ text: "没有表情" });
+  expect((await source("gs", "402", signal))?.blocks[0]).toEqual({
+    type: "text", text: "_(表情)", heading: false, align: "left",
+  });
+  expect(calls).toEqual([]);
+  const [genshin, again, starrail, zzz] = await Promise.all([
+    source("gs", "403", signal), source("gs", "404", signal), source("sr", "405", signal), source("zzz", "406", signal),
+  ]);
+  const block = {
+    type: "text", text: "甲_(表情)乙 _(未知) _(越界) _(凭据) _(缺分组) _(坏_(表情)) _(未闭合", align: "center", heading: false,
+  } as const;
+  expect(genshin?.blocks[0]).toEqual({ ...block, spans: [
+    { text: "甲" }, { text: "_(表情)", bold: true, emoticon: icons("2") },
+    { text: "乙 _(未知) _(越界) _(凭据) _(缺分组) _(坏_(表情)) _(未闭合" },
+  ] });
+  expect(again?.blocks).toEqual(genshin?.blocks);
+  expect(starrail?.blocks[0]).toMatchObject({ spans: expect.arrayContaining([{ text: "_(表情)", bold: true, emoticon: icons("6") }]) });
+  expect(zzz?.blocks[0]).toEqual({ ...block, spans: [
+    { text: "甲" }, { text: "_(表情)", bold: true }, { text: "乙 _(未知) _(越界) _(凭据) _(缺分组) _(坏_(表情)) _(未闭合" },
+  ] });
+  await source("gs", "407", signal);
+  expect(calls.sort()).toEqual(["2", "6", "8"]);
+});
+
 test("米游社列表仅对已核公开域回退并保留请求参数", async () => {
   const calls: URL[] = [];
   const empty = { retcode: 0, data: { list: [] } };

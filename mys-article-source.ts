@@ -1,11 +1,13 @@
 import { load } from "cheerio";
 import { announcementGames, postImage, type AnnouncementGame } from "./mys-announcement-source.ts";
+import { createEmoticonSource, emoticonTokens } from "./mys-emoticon-source.ts";
 
 export interface ArticleSpan {
   readonly text: string;
   readonly bold?: true;
   readonly color?: string;
   readonly underline?: true;
+  readonly emoticon?: string;
 }
 
 type ArticleBlock =
@@ -87,7 +89,7 @@ function articleBlocks(content: string): ArticleBlock[] {
     const spans = cleanSpans(pending);
     const text = spans.map((span) => span.text).join("");
     if (text) blocks.push({ type: "text", text, heading, align,
-      ...(spans.some((span) => span.bold || span.color || span.underline) && { spans }) });
+      ...(spans.some((span) => span.bold || span.color || span.underline || !emoticonTokens(span.text).next().done) && { spans }) });
     pending = [];
   }
   type Node = ReturnType<typeof $.root>[0]["children"][number];
@@ -153,6 +155,7 @@ export function readOfficialArticle(value: unknown, expectedId: string, expected
 }
 
 export function createArticleSource(transport: typeof fetch = fetch) {
+  const emoticons = createEmoticonSource(transport);
   return async (game: AnnouncementGame, id: string, signal: AbortSignal) => {
     if (!/^[1-9]\d{0,19}$/u.test(id)) return;
     const query = new URLSearchParams({ gids: String(announcementGames[game].id), read: "1", post_id: id });
@@ -171,10 +174,41 @@ export function createArticleSource(transport: typeof fetch = fetch) {
           if (response.status >= 500) continue;
           return;
         }
-        return readOfficialArticle(await response.json(), id, game);
+        const article = readOfficialArticle(await response.json(), id, game);
+        if (!article?.blocks.some(block => block.type === "text" && block.spans?.some(span => !emoticonTokens(span.text).next().done))) {
+          return article;
+        }
+        const icons = await emoticons(game);
+        signal.throwIfAborted();
+        return icons?.size ? resolveArticleEmoticons(article, icons) : article;
       } catch {
         signal.throwIfAborted();
       }
     }
   };
+}
+
+function resolveArticleEmoticons(article: OfficialArticle, icons: ReadonlyMap<string, string>): OfficialArticle {
+  let remaining = 160;
+  const blocks = article.blocks.map((block) => {
+    if (block.type !== "text" || !block.spans || !remaining) return block;
+    const spans = block.spans.flatMap((span) => {
+      const pieces: ArticleSpan[] = [];
+      let cursor = 0;
+      for (const { start, end, name } of emoticonTokens(span.text)) {
+        if (!remaining) break;
+        const emoticon = icons.get(name);
+        if (!emoticon) continue;
+        if (start > cursor) pieces.push({ ...span, text: span.text.slice(cursor, start) });
+        pieces.push({ ...span, text: span.text.slice(start, end), emoticon });
+        cursor = end;
+        remaining--;
+      }
+      if (!pieces.length) return [span];
+      if (cursor < span.text.length) pieces.push({ ...span, text: span.text.slice(cursor) });
+      return pieces;
+    });
+    return { ...block, spans };
+  });
+  return { ...article, blocks };
 }

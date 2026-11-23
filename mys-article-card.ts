@@ -4,12 +4,13 @@ import QRCode from "qrcode";
 import type { CanvasRenderingContext2D, Image } from "skia-canvas";
 import type { NoticeDeliverySegment } from "./delivery.ts";
 import { dateFormat, maxMysReplyBytes, readImage, readImageAsset, renderMode, sizeFont, text, wrapped } from "./mys-card-draw.ts";
-import { drawStyledLine, styledLines } from "./mys-article-spans.ts";
+import { drawStyledLine, emoticonSize, styledLines } from "./mys-article-spans.ts";
 import type { OfficialArticle } from "./mys-article-source.ts";
 
 const paperPadding = 18;
 const maxPageHeight = 2_200;
 const maxImages = 18;
+const maxEmoticonImages = 24;
 const maxPages = 10;
 const countLabel = (value: number | undefined) =>
   value === undefined ? "—" : value > 10_000 ? `${(value / 10_000).toFixed(2)}万` : String(value);
@@ -65,9 +66,10 @@ function articleRows(article: OfficialArticle, url: string, images: ReadonlyMap<
       const size = block.heading ? 27 : 24;
       const leading = block.heading ? 43 : 38;
       if (block.spans) {
-        for (const line of styledLines(measure, block.spans, lineWidth, size, block.heading)) {
+        for (const line of styledLines(measure, block.spans, lineWidth, size, block.heading, images)) {
           const at = block.align === "center" ? center - line.width / 2 : block.align === "right" ? right - line.width : left;
-          rows.push({ height: leading, draw: (ctx, y) => drawStyledLine(ctx, line, at, y, size, block.heading) });
+          rows.push({ height: line.hasEmoticons ? emoticonSize + 12 : leading,
+            draw: (ctx, y) => drawStyledLine(ctx, line, at, y, size, block.heading) });
         }
       } else {
         pushText(block.text, size, leading, "#333", block.align, block.heading);
@@ -121,8 +123,11 @@ function articleRows(article: OfficialArticle, url: string, images: ReadonlyMap<
 export async function renderOfficialArticle(article: OfficialArticle, url: string, active: AbortSignal,
   transport: typeof fetch = fetch, onRendered?: (engine: PngRender["engine"]) => void): Promise<NoticeDeliverySegment[]> {
   const signal = AbortSignal.any([active, AbortSignal.timeout(6_000)]);
-  const references = [...new Set([article.avatar, ...article.blocks.flatMap((block) => block.type === "image" ? [block.url] : [])]
+  const originals = [...new Set([article.avatar, ...article.blocks.flatMap((block) => block.type === "image" ? [block.url] : [])]
     .filter((source): source is string => Boolean(source)))].slice(0, maxImages);
+  const emoticons = [...new Set(article.blocks.flatMap(block => block.type === "text" ?
+    block.spans?.flatMap(span => span.emoticon ? [span.emoticon] : []) ?? [] : []))].slice(0, maxEmoticonImages);
+  const references = [...new Set([...originals, ...emoticons])];
   const images = new Map<string, Image>();
   let avatar: Uint8Array | undefined;
   for (let i = 0; i < references.length && !signal.aborted; i += 3) {
