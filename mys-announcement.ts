@@ -2,7 +2,7 @@ import { Job } from "node-schedule";
 import type { CommandForward } from "../../lib/commands.ts";
 import { noticeAccounts, noticeAdapter, type NoticeAccount, type NoticeDeliveryHost, type NoticeDeliveryReply, type NoticeDeliverySegment } from "./delivery.ts";
 import { numberId, type AnnouncementConfig, type AnnouncementConfigReader, type AnnouncementTarget } from "./mys-announcement-config.ts";
-import { announcementArticleLink, announcementGames, announcementLabels, createAnnouncementSource, type AnnouncementGame,
+import { announcementArticleLink, announcementGameKeys, announcementGames, announcementLabels, createAnnouncementSource, type AnnouncementGame,
   type AnnouncementKind, type AnnouncementPushKind, type OfficialAnnouncement } from "./mys-announcement-source.ts";
 import type { NoticeRedis } from "./store.ts";
 import { isPrivateMysCommand, legacyMysSubscription, parseMysArticleLink, parseMysEstimate, parseMysSearch, parsePublicAnnouncementQuery } from "./mys-public-query.ts";
@@ -21,7 +21,7 @@ interface Context {
   readonly member?: { readonly is_admin: boolean; readonly is_owner: boolean };
 }
 
-const games = Object.keys(announcementGames) as AnnouncementGame[];
+const games = announcementGameKeys;
 const kinds = ["notice", "info"] as const;
 const pushAllCommand = "#推送米游社全部";
 const keyFor = (game: AnnouncementGame, kind: AnnouncementPushKind) =>
@@ -255,8 +255,8 @@ export function createOfficialAnnouncements(
     before?: () => Promise<void> | undefined) {
     return async (argument: string, context: Context) => {
       if (argument.trim()) return `用法 ${command}`;
-      if (before && context.isDelegated) return `请直接发送 ${command}。`;
-      const authorized = before ? context.authorizeOfficialNoticePush?.() ?? context.isMaster : context.isMaster;
+      if (context.isDelegated) return `请直接发送 ${command}。`;
+      const authorized = context.authorizeOfficialNoticePush?.() ?? context.isMaster;
       if (authorized !== true) return `仅机器人主人可触发${label}推送。`;
       if (!getRedis()) return "公告存储未连接。";
       const report = await run(selected, channels, before);
@@ -375,7 +375,7 @@ export function createOfficialAnnouncements(
   async function fallback(normalizedMessage: string, context?: Context) {
     if (active.aborted) return;
     const subscription = legacyMysSubscription(normalizedMessage);
-    if (subscription && context) return commands[subscription]?.("", context);
+    if (subscription && context) return commands[aliases[subscription] ?? subscription]?.("", context);
     const target = parsePublicAnnouncementQuery(normalizedMessage);
     if (target) return target.list ? list(target.game, target.kind, target.argument)
       : query(target.game, target.kind, target.argument, target.page);
@@ -417,7 +417,8 @@ export function createOfficialAnnouncements(
   const commands: Record<string, (argument: string, context: Context) => Promise<NoticeDeliveryReply>> = {};
   const aliases: Record<string, string> = {};
   for (const game of games) {
-    const { name } = announcementGames[game];
+    const { name, aliases: alternativeNames } = announcementGames[game];
+    const subscriptionNames = alternativeNames.filter(alias => alias !== "官方");
     for (const kind of kinds) {
       const label = announcementLabels[kind];
       for (const [action, value] of [["开启", "on"], ["关闭", "off"]] as const) {
@@ -444,6 +445,11 @@ export function createOfficialAnnouncements(
         const command = `${name}${action}${label}推送`;
         commands[`#${command}`] = configure;
         aliases[command] = `#${command}`;
+        for (const alternative of subscriptionNames) {
+          const spelling = `${alternative}${action}${label}推送`;
+          aliases[`#${spelling}`] = `#${command}`;
+          aliases[spelling] = `#${command}`;
+        }
         if (game === "gs") {
           const short = `${action}${label}推送`;
           commands[`#${short}`] = configure;
@@ -453,19 +459,18 @@ export function createOfficialAnnouncements(
       const pushName = `#${name}推送${label}`;
       const push = pushCommand(pushName, label, [game], [kind]);
       commands[pushName] = push;
+      for (const alternative of subscriptionNames) aliases[`#${alternative}推送${label}`] = pushName;
       if (game === "gs" && kind === "info") commands["#推送资讯"] = push;
 
       const canonical = `${name}${label}`;
       commands[`#${canonical}`] = (argument) => query(game, kind, argument);
       commands[`#${canonical}列表`] = (argument) => list(game, kind, argument);
       for (let page = 1; page <= 20; page++) commands[`#${canonical}${page}`] = (argument) => query(game, kind, argument, page);
-      for (const spelling of game === "gs" ? [name, "官方", ""] : [name]) {
+      for (const spelling of game === "gs" ? [...alternativeNames, ""] : alternativeNames) {
         const short = `${spelling}${label}`;
-        if (short !== canonical) {
-          if (short !== "公告") aliases[`#${short}`] = `#${canonical}`;
-          aliases[`#${short}列表`] = `#${canonical}列表`;
-          for (let page = 1; page <= 20; page++) aliases[`#${short}${page}`] = `#${canonical}${page}`;
-        }
+        if (short !== "公告") aliases[`#${short}`] = `#${canonical}`;
+        aliases[`#${short}列表`] = `#${canonical}列表`;
+        for (let page = 1; page <= 20; page++) aliases[`#${short}${page}`] = `#${canonical}${page}`;
       }
     }
   }

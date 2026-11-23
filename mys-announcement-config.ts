@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { ActivityGame } from "./mys-activity-source.ts";
-import { announcementGames, type AnnouncementGame } from "./mys-announcement-source.ts";
+import { announcementGameKeys, type AnnouncementGame } from "./mys-announcement-source.ts";
 
 export interface AnnouncementTarget {
   readonly botId: number;
@@ -17,11 +17,16 @@ export interface AnnouncementConfig {
 }
 
 export type AnnouncementConfigReader = () => AnnouncementConfig;
+export const announcementConfigPaths = ["config/mys.pushNews.yaml", "config/config/mys.pushNews.yaml",
+  "plugins/genshin/config/mys.pushNews.yaml"] as const;
 
 const defaultBan = {
   gs: "冒险助力礼包|纪行|预下载|脚本外挂|集中反馈|已开奖|云·原神|魔神任务|传说任务|线下赛|晋级赛|战绩更新|海选赛|邀请赛|积分赛|战绩工具|交流平台|首日赛|线上赛|社区内容|个人专访|全民赛|决赛|总决赛|半决赛|淘汰赛|作品展示|同人|大别野",
   sr: "预下载|脚本外挂|集中反馈|已开奖|问题说明|意见反馈|账号封禁|工具|直播预告|获奖名单|大别野",
   zzz: "作品展示|已开奖|大别野",
+  bbb: "封禁名单|大别野|马克兔速报|预下载",
+  bb: "已开奖|大别野",
+  wd: "大别野|已开奖",
 };
 
 export function numberId(value: unknown): number | undefined {
@@ -58,13 +63,15 @@ export function parseAnnouncementConfig(yaml = "{}"): AnnouncementConfig {
 
   const words = mapping(config.banWord);
   const ban: Partial<Record<AnnouncementGame, RegExp>> = {};
-  const targets: Record<AnnouncementGame, AnnouncementTarget[]> = { gs: [], sr: [], zzz: [] };
-  const infoTargets: Record<AnnouncementGame, AnnouncementTarget[]> = { gs: [], sr: [], zzz: [] };
-  for (const game of Object.keys(announcementGames) as AnnouncementGame[]) {
+  for (const game of announcementGameKeys) {
     const pattern = words[game] ?? defaultBan[game];
     if (typeof pattern === "string" && pattern) ban[game] = new RegExp(pattern, "u");
-    targets[game] = configuredTargets(config[`${game}announceGroup`]);
-    infoTargets[game] = configuredTargets(config[`${game}infoGroup`]);
+  }
+  const targets = groupedTargets("announceGroup");
+  const infoTargets = groupedTargets("infoGroup");
+  function groupedTargets(suffix: "announceGroup" | "infoGroup") {
+    return Object.fromEntries(announcementGameKeys.map(game => [game, configuredTargets(config[game + suffix])])) as
+      Record<AnnouncementGame, AnnouncementTarget[]>;
   }
   const activityTargets: Record<ActivityGame, AnnouncementTarget[]> = { gs: [], sr: [] };
   for (const game of ["gs", "sr"] as const) {
@@ -78,7 +85,7 @@ export function parseAnnouncementConfig(yaml = "{}"): AnnouncementConfig {
 }
 
 function readAnnouncementYaml(root: URL): string {
-  for (const path of ["config/mys.pushNews.yaml", "config/config/mys.pushNews.yaml", "plugins/genshin/config/mys.pushNews.yaml"]) {
+  for (const path of announcementConfigPaths) {
     try {
       return readFileSync(new URL(path, root), "utf8");
     } catch (error) {

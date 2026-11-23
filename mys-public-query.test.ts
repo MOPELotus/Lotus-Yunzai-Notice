@@ -60,7 +60,7 @@ test("旧公开查询恢复三游戏活动和无井号原神入口，保持公�
   expect(await official.fallback("#原神活动")).toBeUndefined();
 });
 
-test("资源预估按原作者和官方顺序查询三游戏，跳过错作者和错区帖子", async () => {
+test("资源预估按原作者和官方顺序查询四游戏，跳过错作者和错区帖子", async () => {
   const requests: string[] = [];
   const host = {
     onlineBots: () => [], listGroups: async () => [],
@@ -73,15 +73,16 @@ test("资源预估按原作者和官方顺序查询三游戏，跳过错作者�
     expect(new Headers(init.headers).has("Cookie")).toBe(false);
     const keyword = url.searchParams.get("keyword")!;
     requests.push(keyword);
+    const author = keyword.startsWith("水晶") ? "80216695" : "137101761";
     expect(Object.fromEntries(url.searchParams)).toEqual({
-      keyword, uid: "137101761", size: "20", offset: "0", sort_type: "2",
+      keyword, uid: author, size: "20", offset: "0", sort_type: "2",
     });
-    const game = keyword.startsWith("星") ? 6 : keyword.startsWith("菲") ? 8 : 2;
-    const post = (post_id: string, game_id = game, uid = "137101761", created_at = 12_345) => ({
+    const game = keyword.startsWith("星") ? 6 : keyword.startsWith("菲") ? 8 : keyword.startsWith("水晶") ? 1 : 2;
+    const post = (post_id: string, game_id = game, uid = author, created_at = 12_345) => ({
       post: { post: { post_id, game_id, uid, created_at, subject: keyword + post_id } },
     });
     return Response.json({ retcode: 0, data: { list: [
-      post("23", game, "999"), post("24", 1), post("20"), post("21", game, "137101761", 20_000),
+      post("23", game, "999"), post("24", 3), post("20"), post("21", game, author, 20_000),
     ] } });
   });
   const official = createOfficialAnnouncements(() => undefined, host, parseAnnouncementConfig(), undefined,
@@ -93,10 +94,12 @@ test("资源预估按原作者和官方顺序查询三游戏，跳过错作者�
     expect(await official.fallback("#星琼盘点")).toBe("星琼统计汇总20\nhttps://www.miyoushe.com/sr/article/20");
     expect(await official.fallback("#菲林预估")).toBe("菲林统计汇总20\nhttps://www.miyoushe.com/zzz/article/20");
     expect(await official.fallback("zzz预估")).toBe("菲林统计汇总20\nhttps://www.miyoushe.com/zzz/article/20");
-    for (const input of ["#水晶估算", "#崩坏三预估", "#原石统计", "#原石预估2"]) {
+    expect(await official.fallback("#崩坏三预估")).toBe("水晶统计20\nhttps://www.miyoushe.com/bh3/article/20");
+    expect(await official.fallback("水晶盘点")).toBe("水晶统计20\nhttps://www.miyoushe.com/bh3/article/20");
+    for (const input of ["#水晶估算", "#原石统计", "#原石预估2", "#崩坏学园二盘点"]) {
       expect(await official.fallback(input)).toBeUndefined();
     }
-    expect(requests).toEqual(["原石统计汇总", "原石统计汇总", "星琼统计汇总", "星琼统计汇总", "菲林统计汇总", "菲林统计汇总"]);
+    expect(requests).toEqual(["原石统计汇总", "原石统计汇总", "星琼统计汇总", "星琼统计汇总", "菲林统计汇总", "菲林统计汇总", "水晶统计", "水晶统计"]);
   } finally {
     await official.dispose();
   }
@@ -140,10 +143,13 @@ test("旧米游社文章直链只取确切来源与文章 ID", () => {
   expect(parseMysArticleLink("www.miyoushe.com/sr/article/79674024")).toEqual({ game: "sr", id: "79674024" });
   expect(parseMysArticleLink("正文 https://www.miyoushe.com/zzz/article/79678537#anchor。"))
     .toEqual({ game: "zzz", id: "79678537" });
+  expect(parseMysArticleLink("https://www.miyoushe.com/bh3/article/79735864")).toEqual({ game: "bbb", id: "79735864" });
+  expect(parseMysArticleLink("https://www.miyoushe.com/bh2/article/79381305")).toEqual({ game: "bb", id: "79381305" });
+  expect(parseMysArticleLink("https://www.miyoushe.com/wd/article/79736300")).toEqual({ game: "wd", id: "79736300" });
   for (const input of ["https://www.miyoushe.com.example.org/ys/article/79329515",
     "https://evil.example/?url=https://www.miyoushe.com/ys/article/79329515",
     "https://other@www.miyoushe.com/ys/article/79329515", "https://www.miyoushe.com:81/ys/article/79329515",
-    "https://www.miyoushe.com/bh3/article/79329515", "https://www.miyoushe.com/ys/article/79329515extra",
+    "https://www.miyoushe.com/bh3/extra/article/79329515", "https://www.miyoushe.com/ys/article/79329515extra",
     "evil-miyoushe.com/ys/article/79329515"]) expect(parseMysArticleLink(input)).toBeUndefined();
   const article = { retcode: 0, data: { post: { post: {
     post_id: "79329515", game_id: 2, subject: "原神活动",
@@ -236,12 +242,16 @@ test("旧多井号、前导零与列表尾号经宿主派发沿用同游戏原�
     expect(await dispatch("#原神公告列表2")).toContain("原神公告列表");
     expect(await dispatch("##%活动列表")).toBeUndefined();
     expect(await dispatch("%活动列表")).toContain("绝区零活动列表");
+    expect(await dispatch("#崩三公告2")).toContain("https://www.miyoushe.com/bh3/article/22");
+    expect(await dispatch("崩坏学园二活动列表")).toContain("https://www.miyoushe.com/bh2/article/21");
+    expect(await dispatch("#未定事件簿资讯2")).toContain("https://www.miyoushe.com/wd/article/22");
     expect(await dispatch("#原神公告2abc")).toBeUndefined();
     expect(await dispatch("##发布公告")).toBeUndefined();
     expect(await dispatch("##推送公告")).toBeUndefined();
     expect(await dispatch("##原神公告", () => false)).toBeUndefined();
     expect(calls).toEqual([["gs", "notice", 20], ["gs", "notice", 20], ["sr", "info", 20],
-      ["gs", "notice", 20], ["gs", "notice", 5], ["zzz", "activity", 5]]);
+      ["gs", "notice", 20], ["gs", "notice", 5], ["zzz", "activity", 5],
+      ["bbb", "notice", 20], ["bb", "activity", 5], ["wd", "info", 20]]);
   } finally {
     await official.dispose();
   }
@@ -284,10 +294,16 @@ test("旧多井号订阅复用群管理、同会话目标和现有功能开关",
     const onlyNotice = (names: readonly string[]) => !names.includes("[notice] 米游社公开查询");
     expect(await dispatch("##开启公告推送", admin, onlyNotice)).toBe(await dispatch("#开启公告推送", admin, onlyNotice));
     expect(await dispatch("###星铁关闭资讯推送", admin, onlyNotice)).toBe("星铁资讯推送已关闭。");
+    expect(await dispatch("##崩坏三关闭资讯推送", admin, onlyNotice)).toBe("崩坏3资讯推送已关闭。");
+    expect(await dispatch("#崩二开启公告推送", admin, onlyNotice)).toBe("崩坏学园2公告推送已开启。");
+    expect(await dispatch("未定开启资讯推送", admin, onlyNotice)).toBe("未定事件簿资讯推送已开启。");
     expect(writes).toEqual([
       { keys: ["lotus-yunzai:notice:mys:gs:targets"], arguments: ["70:90", "on"] },
       { keys: ["lotus-yunzai:notice:mys:gs:targets"], arguments: ["70:90", "on"] },
       { keys: ["lotus-yunzai:notice:mys:sr:info-targets"], arguments: ["70:90", "off"] },
+      { keys: ["lotus-yunzai:notice:mys:bbb:info-targets"], arguments: ["70:90", "off"] },
+      { keys: ["lotus-yunzai:notice:mys:bb:targets"], arguments: ["70:90", "on"] },
+      { keys: ["lotus-yunzai:notice:mys:wd:info-targets"], arguments: ["70:90", "on"] },
     ]);
   } finally {
     await Promise.all([official.dispose(), registered.dispose?.()]);

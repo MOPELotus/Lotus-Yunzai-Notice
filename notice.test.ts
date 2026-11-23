@@ -51,6 +51,34 @@ test("米游社详情保留官方图文顺序并排除无法信任的内容", ()
     .toEqual([`${base}a.png`, `${base}b.png`]);
 });
 
+test("米游社官方公告保留源码占位的原始图片和段落顺序", () => {
+  const first = "https://upload-bbs.miyoushe.com/first.png";
+  const second = "https://upload-bbs.miyoushe.com/second.png";
+  const blocked = "https://example.com/blocked.png";
+  const slot = '<div class="ql-image"><div class="ql-image-box"><img style="opacity: 0;"></div></div>';
+  const content = `<p>公告正文</p>${slot}<p>分段</p>${slot}`;
+  const post = { post_id: "11004", game_id: 3, subject: "崩坏学园2公告", created_at: 1_790_000_000,
+    content, structured_content: JSON.stringify([{ insert: "公告正文" }, { insert: { image: first } },
+      { insert: "分段" }, { insert: { image: second } }]), images: [first, second] };
+  const raw = { retcode: 0, data: { post: { post } } };
+  const read = () => readOfficialArticle(raw, "11004", "bb")?.blocks.map((block) => block.type === "image" ? block.url : block.text);
+  expect(read()).toEqual(["公告正文", first, "分段", second]);
+  expect(readOfficialArticle(raw, "11004", "wd")).toBeUndefined();
+  post.images = [first, blocked];
+  expect(read()).toEqual(["公告正文", first, "分段"]);
+  post.images = [second, first];
+  expect(read()).toEqual(["公告正文", "分段"]);
+  post.images = [first, second];
+  post.content = content.replace("<img", `<img src="${blocked}"`);
+  expect(read()).toEqual(["公告正文", "分段", second]);
+  post.content = content.replace("ql-image-box", "not-an-image-slot");
+  expect(read()).toEqual(["公告正文", "分段"]);
+  post.content = slot + slot;
+  expect(read()).toEqual([first, second]);
+  post.structured_content = "坏数据";
+  expect(read()).toBeUndefined();
+});
+
 test("米游社查询继承详情编号、五条列表、三游戏资讯和摘要兜底", async () => {
   const card = Uint8Array.of(1, 2);
   const calls: [AnnouncementGame, AnnouncementKind | undefined, number | undefined][] = [];
@@ -1599,7 +1627,7 @@ zzzinfoGroup: { '71': [92] }
   } finally { await service.dispose(); }
 });
 
-test.skipIf(!available)("主人手动全量轮先投递到期活动，再检查三游订阅，旧回执与网关未知回执都不重发", async () => {
+test.skipIf(!available)("主人手动全量轮先投递到期活动，再检查六板块订阅，旧回执与网关未知回执都不重发", async () => {
   const now = Date.parse("2026-11-24T03:00:00Z");
   const config = parseAnnouncementConfig(`
 pushTime: '0 0 10 1 1 *'
@@ -1663,13 +1691,15 @@ wdannounceGroup: { '70': [95] }
         const type = url.searchParams.get("type")!;
         const gids = url.searchParams.get("gids")!;
         upstream.push(`消息:${gids}:${type}`);
-        return Response.json({ retcode: 0, data: { list: [{ post: {
-          post_id: `1${gids}${type}`, created_at: Math.floor(now / 1000) - 10, subject: `${gids}:${type}消息样本`,
-        } }] } });
+        const created = Math.floor(now / 1000) - 10;
+        const item = (post_id: string, created_at: number, subject: string) => ({ post: { post_id, created_at, subject } });
+        const rows = [item(`1${gids}${type}`, created, `${gids}:${type}消息样本`)];
+        if (gids === "3") rows.unshift(item("130", created, "学园2已开奖"), item("132", created - 7_200, "学园2过时"));
+        return Response.json({ retcode: 0, data: { list: rows } });
       }) as typeof fetch), () => now);
     try {
       const registry = new CommandRegistry();
-      registry.registerModule({ name: "@lotus-yunzai/notice", commands: {
+      registry.registerModule({ name: "@lotus-yunzai/notice", aliases: official.aliases, commands: {
         ...createNoticePlugin(() => redis, host).commands, ...official.commands, ...activity.commands, ...official.fullPushCommand(activity.run),
       } });
       function dispatch(msg: string, overrides: Partial<MessageEvent> = {}) {
@@ -1692,21 +1722,29 @@ wdannounceGroup: { '70': [95] }
       upstream.length = 0;
       sent.length = 0;
       await exec("SET", "Yz:zzz:mys:newPush:71:92:181", "1");
+      await exec("SET", "Yz:bbb:mys:newPush:70:95:111", "1");
 
       const first = dispatch(cycle);
       await required.promise;
       expect(await dispatch("#原神推送公告")).toContain("正在处理");
       expect(upstream).toEqual(["到期:sr"]);
       release.resolve();
-      expect(await first).toContain("已确认 3 条，未发出 0 条，结果未确认 1 条，已去重 2 条");
-      expect(upstream).toEqual(["到期:sr", "到期:gs", "消息:2:1", "消息:2:3", "消息:6:1", "消息:6:3", "消息:8:1", "消息:8:3"]);
-      expect(sent.map(([group]) => group)).toEqual([94, 93, 90, 91, 91, 92]);
+      expect(await first).toContain("已确认 5 条，未发出 0 条，结果未确认 1 条，已去重 3 条");
+      expect(upstream).toEqual(["到期:sr", "到期:gs", "消息:1:1", "消息:2:1", "消息:2:3", "消息:3:3", "消息:4:1",
+        "消息:6:1", "消息:6:3", "消息:8:1", "消息:8:3"]);
+      expect(sent.map(([group]) => group)).toEqual([94, 93, 90, 95, 95, 91, 91, 92]);
       expect(sent[0]?.[1]).toContain("星铁活动即将结束通知");
       expect(sent[1]?.[1]).toContain("原神活动即将结束通知");
+      expect(sent[3]?.[1]).toContain("https://www.miyoushe.com/bh2/article/133");
+      expect(sent[4]?.[1]).toContain("https://www.miyoushe.com/wd/article/141");
+      expect(await exec("GET", "Yz:bb:mys:newPush:70:95:130")).toBeNull();
+      expect(await exec("GET", "Yz:bb:mys:newPush:70:95:132")).toBeNull();
       expect(JSON.parse(await exec("GET", "lotus-yunzai:notice:mys:zzz:delivery:92:183") as string))
         .toEqual({ state: "unknown", botId: 71, adapter: "milky" });
-      expect(await dispatch(cycle)).toContain("已确认 0 条，未发出 0 条，结果未确认 0 条，已去重 6 条");
-      expect(sent).toHaveLength(6);
+      expect(await dispatch(cycle)).toContain("已确认 0 条，未发出 0 条，结果未确认 0 条，已去重 9 条");
+      expect(await dispatch("#崩三推送公告")).toContain("已去重 1 条");
+      expect(await dispatch("#未定推送公告", { isMaster: false })).toContain("仅机器人主人");
+      expect(sent).toHaveLength(8);
     } finally {
       release.resolve();
       await Promise.all([official.dispose(), activity.dispose()]);

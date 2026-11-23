@@ -9,7 +9,6 @@ import type { NoticeDeliverySegment } from "./delivery.ts";
 const rowHeight = 169;
 const thumbWidth = 242;
 const thumbHeight = 124;
-const gameNames = { gs: "原神", sr: "崩坏星穹铁道", zzz: "绝区零" };
 
 async function listBanner(root: URL, game: AnnouncementGame) {
   const paths = [new URL(`data/notice/miyoushe/${game}/header.png`, root)];
@@ -71,7 +70,8 @@ export function createAnnouncementListRenderer(root: URL, transport: typeof fetc
       })),
     ]);
     active.throwIfAborted();
-    const title = `米游社·${gameNames[game]}${announcementLabels[kind]}列表`;
+    const name = game === "sr" ? "崩坏星穹铁道" : announcementGames[game].name;
+    const title = `米游社·${name}${announcementLabels[kind]}列表`;
     const command = `#${announcementGames[game].name}${announcementLabels[kind]}`;
     const footer = `详情内容使用 ${command} 加上序号查看，如 ${command}2`;
     const bannerHeight = banner ? 118 : 0;

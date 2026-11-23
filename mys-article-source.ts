@@ -64,7 +64,22 @@ function cleanSpans(pending: readonly ArticleSpan[]): ArticleSpan[] {
   return cleaned;
 }
 
-function articleBlocks(content: string): ArticleBlock[] {
+function structuredImages(structured: unknown, listed: unknown): (string | undefined)[] {
+  if (typeof structured !== "string" || structured.length > 500_000) return [];
+  try {
+    const images = list(JSON.parse(structured)).flatMap((op) => {
+      const insert = record(record(op).insert);
+      return Object.hasOwn(insert, "image") ? [postImage(insert.image)] : [];
+    });
+    const urls = list(listed).map(postImage);
+    if (urls.length !== images.length) return [];
+    return images.map((url, index) => url === urls[index] ? url : undefined);
+  } catch {
+    return [];
+  }
+}
+
+function articleBlocks(content: string, structured: unknown, images: unknown): ArticleBlock[] {
   if (content.startsWith("{")) {
     try {
       const gallery = record(JSON.parse(content));
@@ -81,6 +96,16 @@ function articleBlocks(content: string): ArticleBlock[] {
 
   const $ = load(content, { scriptingEnabled: false }, false);
   $("script,style,noscript,iframe,object,template,svg").remove();
+  type Node = ReturnType<typeof $.root>[0]["children"][number];
+  const imageNodes = $("div.ql-image > div.ql-image-box > img").toArray();
+  const imageUrls = new Map<Node, string>();
+  if (imageNodes.some((node) => node.attribs.src === undefined && node.attribs["data-src"] === undefined)) {
+    const urls = structuredImages(structured, images);
+    if (urls.length === imageNodes.length) imageNodes.forEach((node, index) => {
+      const url = urls[index];
+      if (url && node.attribs.src === undefined && node.attribs["data-src"] === undefined) imageUrls.set(node, url);
+    });
+  }
   const blocks: ArticleBlock[] = [];
   let pending: ArticleSpan[] = [];
   let heading = false;
@@ -92,7 +117,6 @@ function articleBlocks(content: string): ArticleBlock[] {
       ...(spans.some((span) => span.bold || span.color || span.underline || !emoticonTokens(span.text).next().done) && { spans }) });
     pending = [];
   }
-  type Node = ReturnType<typeof $.root>[0]["children"][number];
   function walk(node: Node, depth: number, inherited: Omit<ArticleSpan, "text"> = {}) {
     if (depth > 60 || blocks.length >= 160) return;
     if (node.type === "text") { pending.push({ text: node.data, ...inherited }); return; }
@@ -100,7 +124,7 @@ function articleBlocks(content: string): ArticleBlock[] {
     if (node.name === "br") { flush(); return; }
     if (node.name === "img") {
       flush();
-      const url = postImage(node.attribs.src) ?? postImage(node.attribs["data-src"]);
+      const url = postImage(node.attribs.src) ?? postImage(node.attribs["data-src"]) ?? imageUrls.get(node);
       const alt = label(node.attribs.alt, 120);
       if (url) blocks.push({ type: "image", url, alt });
       else if (alt) blocks.push({ type: "text", text: alt, heading: false, align });
@@ -141,7 +165,7 @@ export function readOfficialArticle(value: unknown, expectedId: string, expected
   const title = label(post.subject, 200);
   const created = integer(post.created_at);
   if (!title || !created || created > 253402300799) return;
-  const blocks = articleBlocks(post.content.trim());
+  const blocks = articleBlocks(post.content.trim(), post.structured_content, post.images);
   if (!blocks.length) return;
   const user = record(detail.user);
   const stats = record(detail.stat);

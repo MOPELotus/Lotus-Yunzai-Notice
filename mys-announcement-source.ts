@@ -2,12 +2,16 @@ import { load } from "cheerio";
 import { readPublicMys, type PublicMysTransport } from "./mys-public-request.ts";
 
 export const announcementGames = {
-  gs: { id: 2, name: "原神", slug: "ys" },
-  sr: { id: 6, name: "星铁", slug: "sr" },
-  zzz: { id: 8, name: "绝区零", slug: "zzz" },
+  bbb: { id: 1, name: "崩坏3", slug: "bh3", aliases: ["崩坏三", "崩三"] },
+  gs: { id: 2, name: "原神", slug: "ys", aliases: ["官方"] },
+  bb: { id: 3, name: "崩坏学园2", slug: "bh2", aliases: ["崩坏学园二", "崩坏二", "崩二"] },
+  wd: { id: 4, name: "未定事件簿", slug: "wd", aliases: ["未定"] },
+  sr: { id: 6, name: "星铁", slug: "sr", aliases: [] },
+  zzz: { id: 8, name: "绝区零", slug: "zzz", aliases: [] },
 } as const;
 
 export type AnnouncementGame = keyof typeof announcementGames;
+export const announcementGameKeys = Object.keys(announcementGames) as AnnouncementGame[];
 export type AnnouncementPushKind = "notice" | "info";
 export type AnnouncementKind = AnnouncementPushKind | "activity";
 export const announcementLabels = { notice: "公告", info: "资讯", activity: "活动" } as const;

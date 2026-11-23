@@ -1,23 +1,30 @@
-import type { AnnouncementGame, AnnouncementKind } from "./mys-announcement-source.ts";
+import { announcementGameKeys, announcementGames, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
+import type { EstimateGame } from "./mys-search-source.ts";
 
 export const publicMysFeatureNames = ["[notice] 米游社公开查询", "米游社公告"] as const;
 
-const games = { "原神": "gs", "星铁": "sr", "绝区零": "zzz", "官方": "gs" } as const;
 const kinds = { "公告": "notice", "资讯": "info", "活动": "activity" } as const;
+const games = new Map<string, AnnouncementGame>(announcementGameKeys.flatMap(game =>
+  [announcementGames[game].name, ...announcementGames[game].aliases].map(name => [name, game] as const)));
+const gameNames = [...games.keys()].join("|");
+const queryPattern = new RegExp(`^(#*)(${gameNames})?(公告|资讯|活动)((?:列表|[0-9])*)(?:\\s+(\\d+))?$`, "u");
+const subscriptionNames = [...games.keys()].filter(name => name !== "官方").join("|");
+const subscriptionPattern = new RegExp(`^#{2,}((?:${subscriptionNames})?(?:开启|关闭)(?:公告|资讯)推送)$`, "u");
 
-export function parseMysEstimate(input: string): AnnouncementGame | undefined {
-  const match = /^#?(原神|原石|星铁|星琼|绝区零|zzz|菲林)?(?:预估|盘点)$/u.exec(input.trim());
+export function parseMysEstimate(input: string): EstimateGame | undefined {
+  const match = /^#?(原神|原石|星铁|星琼|绝区零|zzz|菲林|崩坏3|崩坏三|崩三|水晶)?(?:预估|盘点)$/u.exec(input.trim());
   if (!match) return;
   const game = match[1];
   if (game === "星铁" || game === "星琼") return "sr";
   if (game === "绝区零" || game === "zzz" || game === "菲林") return "zzz";
+  if (game === "崩坏3" || game === "崩坏三" || game === "崩三" || game === "水晶") return "bbb";
   return "gs";
 }
 
 export function parsePublicAnnouncementQuery(input: string): {
   game: AnnouncementGame; kind: AnnouncementKind; list: boolean; page?: number; argument: string;
 } | undefined {
-  const match = /^(#*)(官方|原神|星铁|绝区零)?(公告|资讯|活动)((?:列表|[0-9])*)(?:\s+(\d+))?$/u.exec(input.trim());
+  const match = queryPattern.exec(input.trim());
   if (!match) return;
   const [, hashes = "", prefix, label, selection = "", argument = ""] = match;
   const kind = kinds[label as keyof typeof kinds];
@@ -27,16 +34,16 @@ export function parsePublicAnnouncementQuery(input: string): {
   const paddedPage = page !== undefined && page > 0 && selection.startsWith("0");
   const legacy = !argument && (hashes.length > 1 || (list && selection !== "列表") || paddedPage);
   if (hashes && kind !== "activity" && !legacy) return;
-  return { game: prefix ? games[prefix as keyof typeof games] : "gs", kind, list, page, argument };
+  return { game: (prefix && games.get(prefix)) || "gs", kind, list, page, argument };
 }
 
 export function legacyMysSubscription(input: string) {
-  const match = /^#{2,}((?:原神|星铁|绝区零)?(?:开启|关闭)(?:公告|资讯)推送)$/u.exec(input.trim());
+  const match = subscriptionPattern.exec(input.trim());
   if (match?.[1]) return "#" + match[1];
 }
 
 const articleHosts = new Set(["www.miyoushe.com", "miyoushe.com", "bbs.miyoushe.com", "bbs.mihoyo.com"]);
-const articleGames = { ys: "gs", sr: "sr", zzz: "zzz" } as const;
+const articleGames = new Map<string, AnnouncementGame>(announcementGameKeys.map(game => [announcementGames[game].slug, game]));
 const links = /https?:\/\/[^\s<>"'，。；！？、）】》]+|(?<![A-Za-z0-9._/@:=?&%\-])(?:www\.miyoushe\.com|miyoushe\.com|bbs\.miyoushe\.com|bbs\.mihoyo\.com)\/[^\s<>"'，。；！？、）】》]+/giu;
 
 export function parseMysArticleLink(message: string): { game: AnnouncementGame; id: string } | undefined {
@@ -45,13 +52,14 @@ export function parseMysArticleLink(message: string): { game: AnnouncementGame; 
     if (link.length > 2_048) continue;
     const url = URL.parse(/^https?:\/\//iu.test(link) ? link : `https://${link}`);
     if (!url || !articleHosts.has(url.hostname) || url.username || url.password || url.port) continue;
-    const path = /^\/(ys|sr|zzz)\/article\/([1-9]\d{0,19})\/?$/u.exec(url.pathname);
-    if (path?.[2]) return { game: articleGames[path[1] as keyof typeof articleGames], id: path[2] };
+    const path = /^\/([a-z0-9]+)\/article\/([1-9]\d{0,19})\/?$/u.exec(url.pathname);
+    const game = path?.[1] && articleGames.get(path[1]);
+    if (game && path?.[2]) return { game, id: path[2] };
   }
 }
 
 const searchPrefix = /^#(?:米游社|mys)/iu;
-const privateCommand = /签到|^(?:原神|星铁|绝区零)?\s*(?:绑定|登录|扫码|刷新cookie|cookie|(?:全部)?更新(?:全部)?面板|(?:全部)?面板更新|获取游戏角色详情)/iu;
+const privateCommand = new RegExp(`签到|^(?:${subscriptionNames})?\\s*(?:绑定|登录|扫码|刷新cookie|cookie|(?:全部)?更新(?:全部)?面板|(?:全部)?面板更新|获取游戏角色详情)`, "iu");
 export function isPrivateMysCommand(message: string) {
   const input = message.trim();
   const prefix = searchPrefix.exec(input);
