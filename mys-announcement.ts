@@ -13,6 +13,8 @@ export type OfficialNoticeReply = NoticeDeliveryReply | CommandForward;
 
 interface Context {
   readonly isMaster: boolean;
+  readonly isDelegated?: boolean;
+  readonly authorizeOfficialNoticePush?: () => boolean;
   readonly message_type?: string;
   readonly self_id?: number;
   readonly group_id?: number;
@@ -21,6 +23,7 @@ interface Context {
 
 const games = Object.keys(announcementGames) as AnnouncementGame[];
 const kinds = ["notice", "info"] as const;
+const pushAllCommand = "#推送米游社全部";
 const keyFor = (game: AnnouncementGame, kind: AnnouncementPushKind) =>
   `lotus-yunzai:notice:mys:${game}:${kind === "info" ? "info-targets" : "targets"}`;
 const keyForTarget = ({ botId, groupId }: AnnouncementTarget) => `${botId}:${groupId}`;
@@ -241,10 +244,26 @@ export function createOfficialAnnouncements(
     return report;
   }
 
-  function run(selected = games, channels: readonly AnnouncementPushKind[] = kinds) {
+  function run(selected = games, channels: readonly AnnouncementPushKind[] = kinds, before?: () => Promise<void> | undefined) {
     if (pending || active.aborted) return;
-    pending = poll(selected, channels).finally(() => { pending = undefined; });
+    const current = before ? Promise.resolve().then(before).then(() => poll(selected, channels)) : poll(selected, channels);
+    pending = current.finally(() => { pending = undefined; });
     return pending;
+  }
+
+  function pushCommand(command: string, label: string, selected = games, channels: readonly AnnouncementPushKind[] = kinds,
+    before?: () => Promise<void> | undefined) {
+    return async (argument: string, context: Context) => {
+      if (argument.trim()) return `用法 ${command}`;
+      if (before && context.isDelegated) return `请直接发送 ${command}。`;
+      const authorized = before ? context.authorizeOfficialNoticePush?.() ?? context.isMaster : context.isMaster;
+      if (authorized !== true) return `仅机器人主人可触发${label}推送。`;
+      if (!getRedis()) return "公告存储未连接。";
+      const report = await run(selected, channels, before);
+      if (!report || active.aborted) return `${label}推送正在处理或已停止。`;
+      const summary = `已确认 ${report.confirmed} 条，未发出 ${report.rejected} 条，结果未确认 ${report.unknown} 条，已去重 ${report.skipped} 条，异常 ${report.failed} 次。`;
+      return before ? `米游社公告和资讯\n${summary}` : summary;
+    };
   }
 
   async function dispose() {
@@ -431,15 +450,9 @@ export function createOfficialAnnouncements(
           aliases[short] = `#${short}`;
         }
       }
-      const push = async (argument: string, context: Context) => {
-        if (argument.trim()) return `用法 #${name}推送${label}`;
-        if (context.isMaster !== true) return `仅机器人主人可触发${label}推送。`;
-        if (!getRedis()) return "公告存储未连接。";
-        const report = await run([game], [kind]);
-        if (!report) return `${label}推送正在处理或已停止。`;
-        return `已确认 ${report.confirmed} 条，未发出 ${report.rejected} 条，结果未确认 ${report.unknown} 条，已去重 ${report.skipped} 条，异常 ${report.failed} 次。`;
-      };
-      commands[`#${name}推送${label}`] = push;
+      const pushName = `#${name}推送${label}`;
+      const push = pushCommand(pushName, label, [game], [kind]);
+      commands[pushName] = push;
       if (game === "gs" && kind === "info") commands["#推送资讯"] = push;
 
       const canonical = `${name}${label}`;
@@ -456,5 +469,8 @@ export function createOfficialAnnouncements(
       }
     }
   }
-  return { commands, aliases, fallback, run, dispose };
+  function fullPushCommand(advanceActivity: () => Promise<void> | undefined) {
+    return { [pushAllCommand]: pushCommand(pushAllCommand, "米游社全部", games, kinds, advanceActivity) };
+  }
+  return { commands, aliases, fallback, run, dispose, fullPushCommand };
 }

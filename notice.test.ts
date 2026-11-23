@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CommandRegistry, sendCommandReply } from "../../lib/commands.ts";
 import type { MessageEvent } from "../../lib/messages.ts";
+import { openMilkySession } from "../../lib/adapters/milky-session.ts";
+import { noticeGroupTransport } from "../../lib/adapters/notice-groups.ts";
+import { OneBotCalls } from "../../lib/adapters/onebot-calls.ts";
+import { OneBotGroups } from "../../lib/adapters/onebot-groups.ts";
 import { createModule, createNoticePlugin } from "./index.ts";
 import { createNoticeStore, type NoticeRedis, type NoticeWriteReceipt } from "./store.ts";
 import { configuredAnnouncements, parseAnnouncementConfig } from "./mys-announcement-config.ts";
@@ -14,7 +18,7 @@ import { readPublicMys } from "./mys-public-request.ts";
 import { createArticleSource, readOfficialArticle } from "./mys-article-source.ts";
 import { createOfficialAnnouncements } from "./mys-announcement.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
-import { readUpcomingExpiry, type ActivityGame } from "./mys-activity-source.ts";
+import { createActivityExpirySource, readUpcomingExpiry, type ActivityGame } from "./mys-activity-source.ts";
 import { createNoticeDelivery, type NoticeDeliveryHost, type NoticeDeliveryReply } from "./delivery.ts";
 import { createTargetStore, selectNoticeGroups } from "./targets.ts";
 import { configuredNoticeLogLevel, configuredNoticeSchedule, noticeLogger, parseNoticeSchedule, startNoticeScheduler } from "./schedule.ts";
@@ -1540,6 +1544,126 @@ zzzinfoGroup: { '71': [92] }
   } finally { await service.dispose(); }
 });
 
+test.skipIf(!available)("主人手动全量轮先投递到期活动，再检查三游订阅，旧回执与网关未知回执都不重发", async () => {
+  const now = Date.parse("2026-11-24T03:00:00Z");
+  const config = parseAnnouncementConfig(`
+pushTime: '0 0 10 1 1 *'
+maxNum: 2
+gsannounceGroup: { '70': [90, 99] }
+gsinfoGroup: { '70': [90] }
+srannounceGroup: { '71': [91] }
+srinfoGroup: { '71': [91] }
+zzzannounceGroup: { '71': [92] }
+zzzinfoGroup: { '71': [92] }
+gsActivityPush: { '70': [93] }
+srActivityPush: { '71': [94] }
+bbbannounceGroup: { '70': [95] }
+bbinfoGroup: { '70': [95] }
+wdannounceGroup: { '70': [95] }
+`);
+  const sent: [number, string][] = [];
+  const upstream: string[] = [];
+  const required = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const account = new OneBotCalls();
+  const groups = new OneBotGroups();
+  const disconnect = groups.connect(70, { calls: account, send(frame) {
+    if (frame.action === "send_msg") {
+      const params = frame.params as { readonly group_id: number; readonly message: unknown };
+      sent.push([params.group_id, JSON.stringify(params.message)]);
+    }
+    const data = frame.action === "get_group_list" ? [90, 93, 95, 96].map(group_id => ({ group_id })) : { message_id: -19 };
+    account.receive({ status: "ok", retcode: 0, data, echo: frame.echo });
+    return true;
+  } });
+  const stop = new AbortController();
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    const action = new URL(request.url).pathname.split("/").at(-1);
+    const params = await request.json();
+    if (action === "send_group_message") sent.push([params.group_id, JSON.stringify(params.message)]);
+    const data = action === "get_login_info" ? { uin: 71 }
+      : action === "get_group_list" ? { groups: [91, 92, 94, 96].map(group_id => ({ group_id })) }
+      : params.group_id === 92 ? {} : { message_seq: 80 };
+    return Response.json({ status: "ok", retcode: 0, data });
+  } });
+  try {
+    const milky = await openMilkySession({ apiBase: new URL("api/", server.url), eventUrl: new URL("event", server.url),
+      connection: "webhook", webhookPath: "/events", timeoutMs: 2_000, reconnectMs: 100, heartbeatMs: 1_000,
+    }, { signal: stop.signal, dispatch: async () => {} });
+    expect(milky).toBeDefined();
+    const host = noticeGroupTransport(groups.transport(), () => groups.noticeAccounts(), () => milky?.noticeAccount);
+    const activity = createActivityExpiryNotices(() => redis, host, config, stop.signal,
+      createActivityExpirySource((async input => {
+        const game = new URL(String(input)).hostname.startsWith("hkrpg") ? "sr" : "gs";
+        upstream.push(`到期:${game}`);
+        required.resolve();
+        await release.promise;
+        const row = { title: `${game}到期样本`, end_time: "2026-11-25 11:00:00", tag_label: "活动" };
+        return Response.json({ retcode: 0, data: game === "sr"
+          ? { pic_list: [{ type_list: [{ list: [row] }] }] } : { list: [{}, { list: [row] }] } });
+      }) as typeof fetch), () => now, undefined, async () => {});
+    const official = createOfficialAnnouncements(() => redis, host, config, stop.signal,
+      createAnnouncementSource((async input => {
+        const url = new URL(String(input));
+        const type = url.searchParams.get("type")!;
+        const gids = url.searchParams.get("gids")!;
+        upstream.push(`消息:${gids}:${type}`);
+        return Response.json({ retcode: 0, data: { list: [{ post: {
+          post_id: `1${gids}${type}`, created_at: Math.floor(now / 1000) - 10, subject: `${gids}:${type}消息样本`,
+        } }] } });
+      }) as typeof fetch), () => now);
+    try {
+      const registry = new CommandRegistry();
+      registry.registerModule({ name: "@lotus-yunzai/notice", commands: {
+        ...createNoticePlugin(() => redis, host).commands, ...official.commands, ...activity.commands, ...official.fullPushCommand(activity.run),
+      } });
+      function dispatch(msg: string, overrides: Partial<MessageEvent> = {}) {
+        const context: MessageEvent = {
+          msg, raw_message: msg, message: msg, post_type: "message", message_type: "private", isGroup: false, isPrivate: true,
+          isMaster: true, user_id: 10001, reply: () => true, ...overrides,
+        };
+        return registry.dispatch(msg, context);
+      }
+      const cycle = "#推送米游社全部";
+      expect(await dispatch(cycle, { isMaster: false })).toContain("仅机器人主人");
+      expect(await dispatch(cycle, { isDelegated: true })).toContain("请直接发送");
+      expect(await dispatch("#推送公告")).toBe("当前没有可推送的公告。");
+      expect(await dispatch("#推送活动")).toBeUndefined();
+      expect(upstream).toEqual([]);
+
+      expect(await dispatch("#推送资讯")).toContain("已确认 1 条");
+      expect(upstream).toEqual(["消息:2:3"]);
+      expect(sent.map(([group]) => group)).toEqual([90]);
+      upstream.length = 0;
+      sent.length = 0;
+      await exec("SET", "Yz:zzz:mys:newPush:71:92:181", "1");
+
+      const first = dispatch(cycle);
+      await required.promise;
+      expect(await dispatch("#原神推送公告")).toContain("正在处理");
+      expect(upstream).toEqual(["到期:sr"]);
+      release.resolve();
+      expect(await first).toContain("已确认 3 条，未发出 0 条，结果未确认 1 条，已去重 2 条");
+      expect(upstream).toEqual(["到期:sr", "到期:gs", "消息:2:1", "消息:2:3", "消息:6:1", "消息:6:3", "消息:8:1", "消息:8:3"]);
+      expect(sent.map(([group]) => group)).toEqual([94, 93, 90, 91, 91, 92]);
+      expect(sent[0]?.[1]).toContain("星铁活动即将结束通知");
+      expect(sent[1]?.[1]).toContain("原神活动即将结束通知");
+      expect(JSON.parse(await exec("GET", "lotus-yunzai:notice:mys:zzz:delivery:92:183") as string))
+        .toEqual({ state: "unknown", botId: 71, adapter: "milky" });
+      expect(await dispatch(cycle)).toContain("已确认 0 条，未发出 0 条，结果未确认 0 条，已去重 6 条");
+      expect(sent).toHaveLength(6);
+    } finally {
+      release.resolve();
+      await Promise.all([official.dispose(), activity.dispose()]);
+    }
+  } finally {
+    stop.abort();
+    disconnect();
+    account.close();
+    server.stop(true);
+  }
+});
+
 test.skipIf(!available)("旧 cron 实际触发米游社订阅，只从当前在线账号向订阅群发送", async () => {
   const wall = 1_800_000_000;
   const config = parseAnnouncementConfig("pushTime: '*/1 * * * * *'\nzzzannounceGroup: { '80': [90] }");
@@ -1909,6 +2033,7 @@ test.skipIf(!available)("未激活的公告模块保留同步命令，销毁时�
     });
     expect(callbacks.size).toBe(3);
     expect(typeof (module.commands as Record<string, unknown>)["#星铁推送公告"]).toBe("function");
+    expect(typeof (module.commands as Record<string, unknown>)["#推送米游社全部"]).toBe("function");
     try {
       expect(await exec("KEYS", "notice:schedule:*")).toEqual([]);
     } finally {

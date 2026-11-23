@@ -351,7 +351,7 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
     officialFallback = official.fallback;
     disposers.push(official.dispose);
     const expiry = createActivityExpiryNotices(hostRedis, noticeGroups, config, signal, undefined, undefined, whenNoticeActive);
-    Object.assign(module.commands, expiry.commands);
+    Object.assign(module.commands, expiry.commands, official.fullPushCommand(expiry.run));
     disposers.push(expiry.dispose);
   } catch {
     console.warn("[notice] 无法读取米游社公告推送配置。");
