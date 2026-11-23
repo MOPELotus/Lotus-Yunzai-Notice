@@ -1,4 +1,5 @@
 import { Job } from "node-schedule";
+import type { CommandForward } from "../../lib/commands.ts";
 import { noticeAccounts, noticeAdapter, type NoticeAccount, type NoticeDeliveryHost, type NoticeDeliveryReply, type NoticeDeliverySegment } from "./delivery.ts";
 import { numberId, type AnnouncementConfig, type AnnouncementConfigReader, type AnnouncementTarget } from "./mys-announcement-config.ts";
 import { announcementArticleLink, announcementGames, announcementLabels, createAnnouncementSource, type AnnouncementGame,
@@ -6,6 +7,9 @@ import { announcementArticleLink, announcementGames, announcementLabels, createA
 import type { NoticeRedis } from "./store.ts";
 import { isPrivateMysCommand, legacyMysSubscription, parseMysArticleLink, parseMysEstimate, parseMysSearch, parsePublicAnnouncementQuery } from "./mys-public-query.ts";
 import { createMysEstimateSource, createMysSearchSource } from "./mys-search-source.ts";
+import { maxMysReplyBytes, readImageAsset } from "./mys-card-draw.ts";
+
+export type OfficialNoticeReply = NoticeDeliveryReply | CommandForward;
 
 interface Context {
   readonly isMaster: boolean;
@@ -92,7 +96,8 @@ type PresentList = (game: AnnouncementGame, kind: AnnouncementKind, posts: reado
 export function createOfficialAnnouncements(
   getRedis: () => NoticeRedis | undefined, host: NoticeDeliveryHost, configuration: AnnouncementConfig | AnnouncementConfigReader, signal?: AbortSignal,
   feed = createAnnouncementSource(), now = Date.now, whenActive?: (start: () => void) => () => void, presentArticle?: PresentArticle, presentList?: PresentList, search = createMysSearchSource(),
-  estimate = createMysEstimateSource(),
+  estimate = createMysEstimateSource(), estimateImage = async (url: string, active: AbortSignal) =>
+    (await readImageAsset(url, active, fetch))?.bytes,
 ) {
   const readConfig = typeof configuration === "function" ? configuration : () => configuration;
   const initial = readConfig();
@@ -325,6 +330,29 @@ export function createOfficialAnnouncements(
     return article?.pictures.length ? [{ type: "text", text }, ...article.pictures] : text;
   }
 
+  async function estimateGallery(post: OfficialAnnouncement & { readonly gallery?: readonly string[] }): Promise<CommandForward | undefined> {
+    if (!post.gallery?.length) return;
+    const heading = `${post.title}\n${announcementArticleLink("sr", post.id)}`;
+    const nodes: CommandForward["nodes"][number][] = [heading];
+    let totalBytes = 0;
+    let missing = 0;
+    const signal = AbortSignal.any([active, AbortSignal.timeout(10_000)]);
+    for (let start = 0; start < post.gallery.length && !signal.aborted; start += 3) {
+      const files = await Promise.all(post.gallery.slice(start, start + 3).map(url => estimateImage(url, signal).catch(() => undefined)));
+      for (const file of files) {
+        if (!file || totalBytes + file.byteLength > maxMysReplyBytes) {
+          missing++;
+          continue;
+        }
+        totalBytes += file.byteLength;
+        nodes.push({ type: "image", file });
+      }
+    }
+    if (active.aborted || nodes.length === 1) return;
+    if (missing || signal.aborted) nodes.push("部分原图暂不可用，可通过链接查看完整原文。");
+    return { type: "forward", senderName: "星铁星琼预估", nodes, batchSize: 3 };
+  }
+
   async function fallback(normalizedMessage: string, context?: Context) {
     if (active.aborted) return;
     const subscription = legacyMysSubscription(normalizedMessage);
@@ -338,7 +366,12 @@ export function createOfficialAnnouncements(
       try {
         const post = await estimate(estimateGame, active);
         if (active.aborted) return;
-        return post ? articleReply(estimateGame, post.id, post.title) : "暂无数据。";
+        if (!post) return "暂无数据。";
+        if (estimateGame === "sr" && /预估$/u.test(normalizedMessage.trim())) {
+          const gallery = await estimateGallery(post);
+          if (gallery) return gallery;
+        }
+        return articleReply(estimateGame, post.id, post.title);
       } catch {
         if (!active.aborted) return "米游社资源预估暂不可用。";
       }

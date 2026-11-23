@@ -102,6 +102,38 @@ test("资源预估按原作者和官方顺序查询三游戏，跳过错作者�
   }
 });
 
+test("星铁旧预估转发同一作者的原图，盘点仍保留正文链接", async () => {
+  const first = "https://upload-bbs.miyoushe.com/first.png";
+  const second = "https://upload-bbs.miyoushe.com/second.png";
+  const missing = "https://upload-bbs.miyoushe.com/missing.png";
+  const estimate = createMysEstimateSource(async () => Response.json({ retcode: 0, data: { list: [
+    { post: { post: { post_id: "42", game_id: 6, uid: "137101761", created_at: 1,
+      subject: "星琼预估", images: [first, "https://invalid.example/image.png", second, first, missing] } } },
+  ] } }));
+  const requested: string[] = [];
+  const firstBytes = Buffer.from("first");
+  const secondBytes = Buffer.from("second");
+  const official = createOfficialAnnouncements(() => undefined, {} as Parameters<typeof createOfficialAnnouncements>[1],
+    parseAnnouncementConfig(), undefined, undefined, undefined, undefined, undefined, undefined, undefined, estimate,
+    async url => {
+      requested.push(url);
+      return url === first ? firstBytes : url === second ? secondBytes : undefined;
+    });
+  try {
+    const heading = "星琼预估\nhttps://www.miyoushe.com/sr/article/42";
+    expect(await official.fallback("#星铁预估")).toEqual({
+      type: "forward", senderName: "星铁星琼预估", batchSize: 3, nodes: [
+        heading, { type: "image", file: firstBytes }, { type: "image", file: secondBytes },
+        "部分原图暂不可用，可通过链接查看完整原文。",
+      ],
+    });
+    expect(await official.fallback("#星铁盘点")).toBe(heading);
+    expect(requested).toEqual([first, second, missing]);
+  } finally {
+    await official.dispose();
+  }
+});
+
 test("旧米游社文章直链只取确切来源与文章 ID", () => {
   expect(parseMysArticleLink("看看 2026 年这篇（https://bbs.mihoyo.com/ys/article/79329515?share=1）"))
     .toEqual({ game: "gs", id: "79329515" });

@@ -1,11 +1,11 @@
 import { decorateNotice, parseNoticeInput, type InboundNoticeSegment, type NoticeReply } from "./content.ts";
-import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost, type NoticeDeliveryReply } from "./delivery.ts";
+import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost } from "./delivery.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
 import { configuredAnnouncements } from "./mys-announcement-config.ts";
 import { createAnnouncementListRenderer } from "./mys-list-card.ts";
 import { createArticleSource } from "./mys-article-source.ts";
 import { renderOfficialArticle } from "./mys-article-card.ts";
-import { createOfficialAnnouncements } from "./mys-announcement.ts";
+import { createOfficialAnnouncements, type OfficialNoticeReply } from "./mys-announcement.ts";
 import { legacyMysSubscription, publicMysFeatureNames } from "./mys-public-query.ts";
 import { configuredNoticeLogLevel, configuredNoticeSchedule, noticeLogger, startNoticeScheduler } from "./schedule.ts";
 import { createTargetCommands } from "./target-commands.ts";
@@ -23,7 +23,7 @@ interface CommandContext {
 type Handler = (argument: string, context: CommandContext) => NoticeReply | Promise<NoticeReply>;
 type NoticeFallbackContext = CommandContext & { readonly normalizedMessage: string };
 type NoticeFallback = (message: string, context: NoticeFallbackContext) =>
-  NoticeDeliveryReply | Promise<NoticeDeliveryReply | undefined> | undefined;
+  OfficialNoticeReply | Promise<OfficialNoticeReply | undefined> | undefined;
 type Store = ReturnType<typeof createNoticeStore>;
 interface HistoryForward {
   readonly type: "forward";
@@ -320,7 +320,7 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
   catch { log("warn", "无法读取独立公告日志配置，使用默认级别 info。"); }
   const module = createNoticePlugin(hostRedis, noticeGroups, signal, log);
   let aliases: Record<string,string> | undefined;
-  let officialFallback: ((message: string, context: NoticeFallbackContext) => Promise<NoticeDeliveryReply | undefined>) | undefined;
+  let officialFallback: ((message: string, context: NoticeFallbackContext) => Promise<OfficialNoticeReply | undefined>) | undefined;
   const disposers: (() => Promise<void>)[] = [];
   try {
     const window = configuredNoticeSchedule();

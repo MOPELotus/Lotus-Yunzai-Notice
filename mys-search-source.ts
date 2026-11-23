@@ -1,4 +1,4 @@
-import { announcementGames, readAnnouncementFeed, type AnnouncementGame } from "./mys-announcement-source.ts";
+import { announcementGames, postImage, readAnnouncementFeed, type AnnouncementGame } from "./mys-announcement-source.ts";
 import { readPublicMys, type PublicMysTransport } from "./mys-public-request.ts";
 
 export function createMysSearchSource(transport: PublicMysTransport = fetch) {
@@ -53,7 +53,13 @@ export function createMysEstimateSource(transport: PublicMysTransport = fetch) {
         const post = record(entry.post);
         return post.uid === estimateAuthor && post.game_id === announcementGames[game].id;
       });
-      return readAnnouncementFeed({ retcode: 0, data: { list } }, 20, true)[0];
+      const first = readAnnouncementFeed({ retcode: 0, data: { list } }, 20, true)[0];
+      if (!first) return;
+      const images = record(list.find(entry => record(entry.post).post_id === first.id)?.post).images;
+      const gallery = Array.isArray(images)
+        ? Array.from(new Set(images.slice(0, 18).flatMap(input => postImage(input) ?? [])))
+        : [];
+      return { ...first, gallery };
     });
   };
 }
