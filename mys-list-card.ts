@@ -1,3 +1,5 @@
+import { builtinResourceDirectory } from "../../lib/builtin-resources.ts";
+import { join } from "node:path";
 import { stat } from "node:fs/promises";
 import type { PngRender } from "@lotus-yunzai/skia";
 import { drawInfoText, infoCardColors, measureInfoText, renderInfoCard } from "@lotus-yunzai/skia/info-card";
@@ -15,6 +17,7 @@ async function listBanner(root: URL, game: AnnouncementGame) {
   if (game === "gs") {
     paths.push(new URL("data/genshin/resources/html/mysNews-list/蒙德.png", root),
       new URL("plugins/genshin/resources/html/mysNews-list/蒙德.png", root));
+    paths.push(Bun.pathToFileURL(join(builtinResourceDirectory("social/notice", root), "gs-header.png")));
   }
   for (const path of paths) {
     try {
