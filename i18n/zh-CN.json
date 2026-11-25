@@ -5,75 +5,75 @@
   "description": "订阅推送",
   "sections": {
     "content": {
-      "description": "订阅推送",
+      "description": "公告内容解析、格式校验与图文编码模块",
       "source": "plugins/notice/content.ts"
     },
     "delivery": {
-      "description": "订阅推送",
+      "description": "公告群发投递、撤回及 Redis 回执状态管理模块",
       "source": "plugins/notice/delivery.ts"
     },
     "index": {
-      "description": "订阅推送",
+      "description": "群公告插件主模块，负责公告发布、编辑、撤回、历史查询、群发推送、回执查询及米游社活动提醒注册。",
       "source": "plugins/notice/index.ts"
     },
     "mys-activity": {
-      "description": "订阅推送",
+      "description": "米游社游戏活动到期提醒定时推送与群开关指令",
       "source": "plugins/notice/mys-activity.ts"
     },
     "mys-activity-source": {
-      "description": "订阅推送",
+      "description": "米游社活动公告数据源模块，负责请求接口并解析即将到期的游戏活动列表。",
       "source": "plugins/notice/mys-activity-source.ts"
     },
     "mys-announcement": {
-      "description": "订阅推送",
+      "description": "米游社公告订阅与查询：处理公告定时推送、群组订阅开关、列表查询及文章搜索",
       "source": "plugins/notice/mys-announcement.ts"
     },
     "mys-announcement-config": {
-      "description": "订阅推送：配置",
+      "description": "米游社公告与活动推送 YAML 配置解析及过滤规则",
       "source": "plugins/notice/mys-announcement-config.ts"
     },
     "mys-announcement-source": {
-      "description": "订阅推送",
+      "description": "米游社公告来源配置：定义支持的游戏名称、ID、标识及别名映射",
       "source": "plugins/notice/mys-announcement-source.ts"
     },
     "mys-article-card": {
-      "description": "订阅推送：图片卡片",
+      "description": "米游社文章卡片渲染：将文章元数据、正文及图片排版绘制为分页图片卡片",
       "source": "plugins/notice/mys-article-card.ts"
     },
     "mys-emoticon-source": {
-      "description": "订阅推送",
+      "description": "订阅推送：米游社表情包清单获取与解析",
       "source": "plugins/notice/mys-emoticon-source.ts"
     },
     "mys-list-card": {
-      "description": "订阅推送：图片卡片",
+      "description": "订阅推送：米游社公告列表图片卡片渲染",
       "source": "plugins/notice/mys-list-card.ts"
     },
     "mys-public-query": {
-      "description": "订阅推送",
+      "description": "订阅推送：米游社公开搜索指令解析",
       "source": "plugins/notice/mys-public-query.ts"
     },
     "mys-public-request": {
-      "description": "订阅推送：请求",
+      "description": "订阅推送：米游社公开接口请求封装",
       "source": "plugins/notice/mys-public-request.ts"
     },
     "mys-search-source": {
-      "description": "订阅推送",
+      "description": "订阅推送：米游社帖子与资源预估搜索数据源",
       "source": "plugins/notice/mys-search-source.ts"
     },
     "schedule": {
-      "description": "订阅推送：排期",
+      "description": "订阅推送：定时公告配置解析与排期执行",
       "source": "plugins/notice/schedule.ts"
     },
     "store": {
-      "description": "订阅推送",
+      "description": "订阅推送：公告内容与状态的 Redis 存储管理",
       "source": "plugins/notice/store.ts"
     },
     "target-commands": {
-      "description": "订阅推送：命令",
+      "description": "订阅推送：公告账号与目标群黑白名单管理指令",
       "source": "plugins/notice/target-commands.ts"
     },
     "targets": {
-      "description": "订阅推送",
+      "description": "公告目标群与账号配置存储管理",
       "source": "plugins/notice/targets.ts"
     }
   },
@@ -206,7 +206,7 @@
     "mys-announcement-config.text_367402e74f": "米游社推送配置须为 YAML 映射。",
     "mys-announcement-config.text_47bc57916c": "米游社推送定时或条数配置无效。",
     "mys-announcement-config.text_5a55715852": "米游社推送目标格式无效。",
-    "mys-announcement-config.text_5d53a57803": "[notice] 无法读取 {value1}活动到期推送目标。",
+    "mys-announcement-config.text_5d53a57803": "[notice] 无法读取{value1}活动到期推送目标。",
     "mys-announcement-config.text_7e65230203": "已开奖|大别野",
     "mys-announcement-config.text_806ef05927": "封禁名单|大别野|马克兔速报|预下载",
     "mys-announcement-config.text_a2927891f0": "星铁",
@@ -362,316 +362,316 @@
   },
   "parameters": {
     "content.text_52b72bd39c": {
-      "maxTextCharacters": "maxTextCharacters"
+      "maxTextCharacters": "最大字符数上限"
     },
     "index.text_7ca7f03d80": {
-      "status": "item.status"
+      "status": "公告状态描述"
     },
     "index.text_3ae64658f7": {
-      "creator": "item.creator"
+      "creator": "公告发布者"
     },
     "index.text_2b70c269ae": {
-      "status": "item.status"
+      "status": "公告状态"
     },
     "index.text_55a1d9bcb5": {
-      "creator": "item.creator"
+      "creator": "公告发布者"
     },
     "index.text_a294d065ef": {
-      "timestamp": "item.timestamp"
+      "timestamp": "公告时间戳"
     },
     "index.text_f4505d0f9f": {
-      "verb": "verb"
+      "verb": "操作动词（发布或编辑）"
     },
     "index.text_e69631bde8": {
-      "verb": "verb"
+      "verb": "操作动词（发布或编辑）"
     },
     "index.text_87a9692b7d": {
-      "id": "notice.id"
+      "id": "已发布公告的编号"
     },
     "index.text_bee7c78b04": {
-      "pages": "pages"
+      "pages": "历史公告总页数"
     },
     "index.text_8c370436a4": {
-      "id": "id",
-      "accounts": "accounts",
-      "selected": "selected"
+      "id": "公告编号",
+      "accounts": "参与推送的机器人账号数量",
+      "selected": "目标群总数量"
     },
     "index.text_79101fc7af": {
-      "processed": "processed",
-      "selected": "selected",
-      "confirmed": "confirmed"
+      "processed": "已处理的群数量",
+      "selected": "目标群总数量",
+      "confirmed": "已确认送达的群数量"
     },
     "index.text_6e6a706ba5": {
-      "noticeId": "result.noticeId",
-      "selected": "result.selected"
+      "noticeId": "公告编号",
+      "selected": "选中的目标群数量"
     },
     "index.text_97e92a3f7d": {
-      "value1": "count(\"confirmed\")",
-      "value2": "count(\"not-sent\")",
-      "value3": "count(\"unknown\")"
+      "value1": "已确认送达的群数量",
+      "value2": "未发出的群数量",
+      "value3": "送达结果未确认的群数量"
     },
     "index.text_ea8dd79188": {
-      "botId": "botId",
-      "value2": "confirmedByAccount.get(botId) ?? 0",
-      "total": "total"
+      "botId": "机器人账号 QQ 号",
+      "value2": "该账号已确认送达的群数量",
+      "total": "分配给该账号的目标群总数"
     },
     "index.text_62acebdbf8": {
-      "value1": "failed.slice(0, failedGroupLimit).join(\"、\")"
+      "value1": "未确认送达的群组及状态描述列表"
     },
     "index.text_4f6d3657e7": {
-      "value1": "failed.length - failedGroupLimit"
+      "value1": "未展示的失败群数量"
     },
     "index.text_983b7608a1": {
-      "alreadyClaimed": "result.alreadyClaimed"
+      "alreadyClaimed": "因已有投递记录而跳过的群数量"
     },
     "index.text_57f56b207c": {
-      "discoveryFailures": "result.discoveryFailures"
+      "discoveryFailures": "读取目标群失败的机器人数"
     },
     "index.text_1fd24f13e1": {
-      "noticeId": "result.noticeId"
+      "noticeId": "公告编号"
     },
     "index.text_597375fb3e": {
-      "noticeId": "result.noticeId"
+      "noticeId": "公告编号"
     },
     "index.text_58bdb85875": {
-      "noticeId": "result.noticeId",
-      "selected": "result.selected"
+      "noticeId": "公告编号",
+      "selected": "已选中的消息数量"
     },
     "index.text_7388115620": {
-      "value1": "count(\"confirmed\")",
-      "value2": "count(\"not-sent\")",
-      "value3": "count(\"unknown\")"
+      "value1": "已确认撤回的群数量",
+      "value2": "未发出撤回的群数量",
+      "value3": "撤回结果未确认的群数量"
     },
     "index.text_56e6e2ef8f": {
-      "alreadyClaimed": "result.alreadyClaimed"
+      "alreadyClaimed": "已跳过消息数量"
     },
     "index.text_09ecd4d4f3": {
-      "noticeId": "result.noticeId"
+      "noticeId": "公告编号"
     },
     "index.text_a24a822bfe": {
-      "noticeId": "result.noticeId",
-      "pages": "pages"
+      "noticeId": "公告编号",
+      "pages": "回执总页数"
     },
     "index.text_0878dc62cb": {
-      "groupId": "receipt.groupId",
-      "botId": "receipt.botId",
-      "value3": "describeReceipt(receipt)"
+      "groupId": "目标群号",
+      "botId": "机器人账号ID",
+      "value3": "投递回执状态描述"
     },
     "index.text_2e42d76eee": {
-      "noticeId": "result.noticeId",
-      "page": "page",
-      "pages": "pages"
+      "noticeId": "公告编号",
+      "page": "当前页码",
+      "pages": "总页数"
     },
     "index.text_008627ff5f": {
-      "messageId": "receipt.messageId"
+      "messageId": "已发送的消息ID"
     },
     "mys-activity.text_750034ad8a": {
-      "value1": "names[game]",
-      "subtitle": "event.subtitle"
+      "value1": "游戏名称",
+      "subtitle": "活动副标题"
     },
     "mys-activity.text_caa83a5821": {
-      "title": "event.title",
-      "days": "days",
-      "hours": "hours",
-      "minutes": "minutes",
-      "value5": "remaining%60",
-      "value6": "chinaTime(event.end)"
+      "title": "活动标题",
+      "days": "剩余天数",
+      "hours": "剩余小时数",
+      "minutes": "剩余分钟数",
+      "value5": "剩余秒数",
+      "value6": "活动结束时间（北京时间）"
     },
     "mys-activity.text_e03f3b9e17": {
-      "value1": "names[game]"
+      "value1": "游戏名称"
     },
     "mys-activity.text_447cc117f7": {
-      "value1": "names[game]"
+      "value1": "游戏名称"
     },
     "mys-activity.text_8c8773a26b": {
-      "prefix": "prefix"
+      "prefix": "命令前缀"
     },
     "mys-activity.text_b193168ee7": {
-      "value1": "names[game]",
-      "label": "label"
+      "value1": "游戏名称",
+      "label": "操作状态（开启或关闭）"
     },
     "mys-announcement-config.text_5d53a57803": {
-      "value1": "game === \"gs\" ? \"原神\" : \"星铁\""
+      "value1": "游戏名称"
     },
     "mys-announcement.text_f40e1d7191": {
-      "command": "command"
+      "command": "完整的推送指令字符串"
     },
     "mys-announcement.text_69effc2871": {
-      "command": "command"
+      "command": "完整的推送指令字符串"
     },
     "mys-announcement.text_c6fe4f2b60": {
-      "label": "label"
+      "label": "公告类型名称或推送范围"
     },
     "mys-announcement.text_eea71bdc52": {
-      "label": "label"
+      "label": "公告类型名称或推送范围"
     },
     "mys-announcement.text_247ba41fa0": {
-      "confirmed": "report.confirmed",
-      "rejected": "report.rejected",
-      "unknown": "report.unknown",
-      "skipped": "report.skipped",
-      "failed": "report.failed"
+      "confirmed": "已确认送达的消息数",
+      "rejected": "未发出或被拒收的消息数",
+      "unknown": "投递结果未确认的消息数",
+      "skipped": "因去重而跳过的消息数",
+      "failed": "推送执行异常的次数"
     },
     "mys-announcement.text_3ab11af5c4": {
-      "summary": "summary"
+      "summary": "推送结果汇总文本"
     },
     "mys-announcement.text_03670a06f8": {
-      "name": "name",
-      "label": "label"
+      "name": "游戏名称",
+      "label": "公告类型名称"
     },
     "mys-announcement.text_d21d2863c5": {
-      "name": "name",
-      "label": "label"
+      "name": "游戏名称",
+      "label": "公告类型名称"
     },
     "mys-announcement.text_7f0f5d6847": {
-      "length": "posts.length",
-      "name": "name",
-      "label": "label",
-      "value4": "posts.length"
+      "length": "当前获取到的公告条数",
+      "name": "游戏名称",
+      "label": "公告类型名称",
+      "value4": "当前获取到的公告条数（最大可选序号）"
     },
     "mys-announcement.text_b655331797": {
-      "label": "label"
+      "label": "公告类型名称"
     },
     "mys-announcement.text_b33d6a8d75": {
-      "name": "name",
-      "label": "label"
+      "name": "游戏名称",
+      "label": "公告类型名称"
     },
     "mys-announcement.text_e20a1fa7a4": {
-      "name": "name",
-      "label": "label"
+      "name": "游戏名称",
+      "label": "公告类型名称"
     },
     "mys-announcement.text_25d3a2a2ba": {
-      "length": "posts.length",
-      "value2": "posts.length"
+      "length": "搜索结果总条数",
+      "value2": "搜索结果总条数（最大可选序号）"
     },
     "mys-announcement.text_2f0664f20c": {
-      "name": "name",
-      "action": "action",
-      "label": "label"
+      "name": "游戏名称",
+      "action": "开关操作名称",
+      "label": "公告类型名称"
     },
     "mys-announcement.text_48d1700d89": {
-      "label": "label"
+      "label": "公告类型名称"
     },
     "mys-announcement.text_be4486aad5": {
-      "name": "name",
-      "label": "label",
-      "action": "action"
+      "name": "游戏名称",
+      "label": "公告类型名称",
+      "action": "开关操作名称"
     },
     "mys-announcement.text_9b9101dcd6": {
-      "label": "label"
+      "label": "公告类型名称"
     },
     "mys-announcement.text_c1d233aaef": {
-      "name": "name",
-      "action": "action",
-      "label": "label"
+      "name": "游戏名称",
+      "action": "开关操作名称",
+      "label": "公告类型名称"
     },
     "mys-announcement.text_db2b052b10": {
-      "alternative": "alternative",
-      "action": "action",
-      "label": "label"
+      "alternative": "游戏别名",
+      "action": "开关操作名称",
+      "label": "公告类型名称"
     },
     "mys-announcement.text_6990de13a3": {
-      "action": "action",
-      "label": "label"
+      "action": "开关操作名称",
+      "label": "公告类型名称"
     },
     "mys-article-card.text_b2e8dfa288": {
-      "value1": "(value / 10_000).toFixed(2)"
+      "value1": "保留两位小数的万级数值"
     },
     "mys-article-card.text_21a0488201": {
-      "value1": "dateFormat.format(article.created * 1000)"
+      "value1": "格式化后的文章发布时间"
     },
     "mys-article-card.text_1d87d47e95": {
-      "alt": "block.alt"
+      "alt": "图片替代说明文本"
     },
     "mys-article-card.text_04672a3887": {
-      "value1": "pages.length + 1"
+      "value1": "当前续页页码"
     },
     "mys-list-card.text_0f57cd62dd": {
-      "name": "name",
-      "value2": "announcementLabels[kind]"
+      "name": "游戏名称",
+      "value2": "公告类型名称"
     },
     "mys-list-card.text_017825b859": {
-      "command": "command",
-      "value2": "command"
+      "command": "查看详情的指令前缀",
+      "value2": "示例指令前缀"
     },
     "schedule.text_303afbe194": {
-      "noticeId": "noticeId"
+      "noticeId": "公告 ID"
     },
     "schedule.text_3782c14324": {
-      "noticeId": "noticeId",
-      "confirmed": "confirmed",
-      "selected": "result.selected",
-      "alreadyClaimed": "result.alreadyClaimed"
+      "noticeId": "公告 ID",
+      "confirmed": "确认送达数",
+      "selected": "目标总数",
+      "alreadyClaimed": "已认领跳过数"
     },
     "target-commands.text_19095cd9f3": {
-      "action": "action"
+      "action": "操作名称"
     },
     "target-commands.text_4f7084b2e7": {
-      "action": "action",
-      "changed": "changed",
-      "length": "ids.length"
+      "action": "操作类型（启用或禁用）",
+      "changed": "已变更账号数",
+      "length": "在线账号总数"
     },
     "target-commands.text_71b2703fe8": {
-      "account": "account"
+      "account": "账号 ID"
     },
     "target-commands.text_5d193810f3": {
-      "saved": "saved"
+      "saved": "已保存提示前缀"
     },
     "target-commands.text_b0149e6b27": {
-      "length": "groups.length"
+      "length": "群数量"
     },
     "target-commands.text_d87997a2cf": {
-      "pushable": "pushable"
+      "pushable": "可推送群数量"
     },
     "target-commands.text_9a995fe04d": {
-      "value1": "config.pushInterval ?? 2000"
+      "value1": "推送间隔（毫秒）"
     },
     "target-commands.text_5d710ee899": {
-      "value1": "config.retryCount ?? 3"
+      "value1": "重试次数"
     },
     "target-commands.text_15d1928903": {
-      "length": "config.whitelist.length",
-      "value2": "config.blacklist.length"
+      "length": "白名单群数量",
+      "value2": "黑名单群数量"
     },
     "target-commands.text_6f945a35e6": {
-      "action": "action",
-      "length": "ids.length"
+      "action": "操作名称",
+      "length": "在线账号总数"
     },
     "target-commands.text_6ce3d07fc5": {
-      "length": "global.whitelist.length",
-      "value2": "global.blacklist.length"
+      "length": "全局白名单群数量",
+      "value2": "全局黑名单群数量"
     },
     "target-commands.text_b1144c60f3": {
-      "enabled": "enabled",
-      "memberships": "memberships",
-      "available": "available"
+      "enabled": "已启用的账号数",
+      "memberships": "总群数",
+      "available": "可推送群数"
     },
     "target-commands.text_99daac5d8c": {
-      "failures": "failures"
+      "failures": "统计失败的账号数量"
     },
     "target-commands.text_55c65780b8": {
-      "title": "title"
+      "title": "列表标题"
     },
     "target-commands.text_5cab27540e": {
-      "title": "title",
-      "pages": "pages"
+      "title": "列表标题",
+      "pages": "总页数"
     },
     "target-commands.text_40c70ab82a": {
-      "title": "title",
-      "page": "page",
-      "pages": "pages",
-      "length": "ids.length",
-      "value5": "ids.slice((page - 1) * groupsPerPage, page * groupsPerPage).join(\"、\")"
+      "title": "列表标题",
+      "page": "当前页码",
+      "pages": "总页数",
+      "length": "群总数",
+      "value5": "当前页群号列表"
     },
     "target-commands.text_d4363e1d93": {
-      "title": "title",
-      "action": "action",
-      "affected": "affected"
+      "title": "名单标题",
+      "action": "操作名称",
+      "affected": "受影响的群数量"
     },
     "target-commands.text_9a53ab89f7": {
-      "title": "title",
-      "action": "action",
-      "affected": "affected"
+      "title": "名单标题",
+      "action": "操作名称",
+      "affected": "受影响的群数量"
     }
   }
 }
