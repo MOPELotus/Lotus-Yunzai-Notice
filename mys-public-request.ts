@@ -1,3 +1,5 @@
+import { withReadRetries } from "@lotus-yunzai/http";
+
 export type PublicMysTransport = (url: URL, init: RequestInit) => Promise<Response>;
 
 interface PublicRequest {
@@ -19,9 +21,11 @@ export async function readPublicMys<T>({ url, alternate, signal, phaseMs, accept
     signal.throwIfAborted();
     const another = index + 1 < addresses.length;
     const active = phaseMs ? AbortSignal.any([signal, AbortSignal.timeout(phaseMs)]) : signal;
+    // With a backup, reserve two of the three total attempts for it.
+    const request = withReadRetries(transport, { attempts: alternate ? index === 0 ? 1 : 2 : 3 });
     let response: Response;
     try {
-      response = await transport(address, {
+      response = await request(address, {
         method: "GET", redirect: "manual", credentials: "omit", signal: active,
         headers: { Referer: "https://www.miyoushe.com/", ...(accept && { Accept: accept, "User-Agent": "Mozilla/5.0" }) },
       });
@@ -35,7 +39,7 @@ export async function readPublicMys<T>({ url, alternate, signal, phaseMs, accept
       discard(response);
       signal.throwIfAborted();
     }
-    if (!response.ok && (response.status < 500 || !another)) return decode(response);
+    if (!response.ok && (response.status < 500 || !another || response.headers.has("Retry-After"))) return decode(response);
     if (active.aborted || !response.ok) {
       discard(response);
       if (another) continue;
