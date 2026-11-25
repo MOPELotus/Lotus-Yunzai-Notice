@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { announcementGameKeys, announcementGames, type AnnouncementGame, type AnnouncementKind } from "./mys-announcement-source.ts";
 import type { EstimateGame } from "./mys-search-source.ts";
 
@@ -66,7 +69,7 @@ export function isPrivateMysCommand(message: string) {
   return prefix !== null && privateCommand.test(input.slice(prefix[0].length).trim());
 }
 
-const searchUsage = "请输入关键词，如 #米游社 七七。可追加「第2条」选择搜索结果。";
+const searchUsage = $t("mys-public-query.text_50820e368f");
 
 export function parseMysSearch(message: string): { keyword: string; offset: number } | { error: string } | undefined {
   const input = message.trim();

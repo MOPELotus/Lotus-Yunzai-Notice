@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import type { NoticeRedis } from "./store.ts";
 
 export type GroupList = "whitelist" | "blacklist";
@@ -17,7 +20,7 @@ export interface TargetSettings {
 const globalKeys = ["notice:whitelist", "notice:blacklist"];
 
 function accountKey(account: string) {
-  if (!validTargetId(account)) throw new Error("无效的公告账号");
+  if (!validTargetId(account)) throw new Error($t("targets.text_515323d2be"));
   return `notice:account:${account}:config`;
 }
 
@@ -26,18 +29,18 @@ export function validTargetId(id: string): boolean {
 }
 
 function parseIds(values: unknown): string[] {
-  if (!Array.isArray(values)) throw new Error("公告名单格式无效");
+  if (!Array.isArray(values)) throw new Error($t("targets.text_24ed3d8912"));
   const ids = values.map((value: unknown) => {
     if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
     if (typeof value === "string" && validTargetId(value)) return value;
-    throw new Error("公告名单含无效群号");
+    throw new Error($t("targets.text_b12fa04f9e"));
   });
   return [...new Set(ids)];
 }
 
 function parseAccountList(value: unknown): string[] {
   if (value === null) return [];
-  if (typeof value !== "string") throw new Error("公告账号名单格式无效");
+  if (typeof value !== "string") throw new Error($t("targets.text_e915a0c8f4"));
   return parseIds(JSON.parse(value));
 }
 
@@ -45,7 +48,7 @@ function parseEnabled(value: unknown): boolean {
   if (value === null || value === "true") return true;
   if (value === "false") return false;
   if (typeof value === "string" && /^-?\d+$/u.test(value)) return Number(value) !== 0;
-  throw new Error("公告账号启用状态无效");
+  throw new Error($t("targets.text_79babe351e"));
 }
 
 // One snapshot for both filters so a concurrent config edit cannot mix fields.
@@ -129,7 +132,7 @@ export function createTargetStore(redis: Redis) {
       const keys = account === undefined ? globalKeys : [...globalKeys, accountKey(account)];
       const result = await redis.eval(readLists, { keys, arguments: [] });
       if (!Array.isArray(result) || result.length !== (account === undefined ? 2 : 7)) {
-        throw new Error("无法读取公告目标群配置");
+        throw new Error($t("targets.text_0f25118ca7"));
       }
       const global = { whitelist: parseIds(result[0]), blacklist: parseIds(result[1]) };
       if (account === undefined) return { global };
@@ -160,7 +163,7 @@ export function createTargetStore(redis: Redis) {
           keys: [accountKey(account)],
           arguments: [list, operation, ...ids],
         });
-      if (typeof result !== "number") throw new Error("公告名单写入失败");
+      if (typeof result !== "number") throw new Error($t("targets.text_56dfb63a10"));
       return result;
     },
 
@@ -168,7 +171,7 @@ export function createTargetStore(redis: Redis) {
       const keys = [...new Set(accounts)].map(accountKey);
       if (!keys.length) return 0;
       const result = await redis.eval(setAccounts, { keys, arguments: [field, String(value)] });
-      if (typeof result !== "number") throw new Error("公告账号配置写入失败");
+      if (typeof result !== "number") throw new Error($t("targets.text_d205456a89"));
       return result;
     },
   };

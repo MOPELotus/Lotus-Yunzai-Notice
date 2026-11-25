@@ -1,20 +1,23 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { load } from "cheerio";
 import { readPublicMys, type PublicMysTransport } from "./mys-public-request.ts";
 
 export const announcementGames = {
-  bbb: { id: 1, name: "崩坏3", slug: "bh3", aliases: ["崩坏三", "崩三"] },
-  gs: { id: 2, name: "原神", slug: "ys", aliases: ["官方"] },
-  bb: { id: 3, name: "崩坏学园2", slug: "bh2", aliases: ["崩坏学园二", "崩坏二", "崩二"] },
-  wd: { id: 4, name: "未定事件簿", slug: "wd", aliases: ["未定"] },
-  sr: { id: 6, name: "星铁", slug: "sr", aliases: [] },
-  zzz: { id: 8, name: "绝区零", slug: "zzz", aliases: [] },
+  bbb: { id: 1, name: $t("mys-announcement-source.text_6d3d8653d7"), slug: "bh3", aliases: [$t("mys-announcement-source.text_e3173a70bd"), $t("mys-announcement-source.text_df43f0569d")] },
+  gs: { id: 2, name: $t("mys-announcement-source.text_d1597c51ed"), slug: "ys", aliases: [$t("mys-announcement-source.text_e73e38c1f6")] },
+  bb: { id: 3, name: $t("mys-announcement-source.text_e5b1fba52e"), slug: "bh2", aliases: [$t("mys-announcement-source.text_b89bc676bd"), $t("mys-announcement-source.text_7b370b8094"), $t("mys-announcement-source.text_a84dd5bd1b")] },
+  wd: { id: 4, name: $t("mys-announcement-source.text_a6e4fbed57"), slug: "wd", aliases: [$t("mys-announcement-source.text_4b20dcc35a")] },
+  sr: { id: 6, name: $t("mys-announcement-source.text_a2927891f0"), slug: "sr", aliases: [] },
+  zzz: { id: 8, name: $t("mys-announcement-source.text_b1110352c9"), slug: "zzz", aliases: [] },
 } as const;
 
 export type AnnouncementGame = keyof typeof announcementGames;
 export const announcementGameKeys = Object.keys(announcementGames) as AnnouncementGame[];
 export type AnnouncementPushKind = "notice" | "info";
 export type AnnouncementKind = AnnouncementPushKind | "activity";
-export const announcementLabels = { notice: "公告", info: "资讯", activity: "活动" } as const;
+export const announcementLabels = { notice: $t("mys-announcement-source.text_069c0ecbf8"), info: $t("mys-announcement-source.text_71d9a93075"), activity: $t("mys-announcement-source.text_9e9bead814") } as const;
 const sourceChannel = { notice: "1", activity: "2", info: "3" } as const;
 
 export function announcementArticleLink(game: AnnouncementGame, id: string) {
@@ -61,7 +64,7 @@ function previewText(value: unknown): string | undefined {
 export function readAnnouncementFeed(value: unknown, limit = 10, sourceOrder = false): readonly OfficialAnnouncement[] {
   const response = mapping(value);
   const list = mapping(response.data).list;
-  if (response.retcode !== 0 || !Array.isArray(list)) throw new Error("米游社公告接口返回无效。");
+  if (response.retcode !== 0 || !Array.isArray(list)) throw new Error($t("mys-announcement-source.text_212716b252"));
   const posts = new Map<string, OfficialAnnouncement>();
   for (const row of list.slice(0, limit)) {
     const entry = mapping(row);
@@ -94,7 +97,7 @@ export function createAnnouncementSource(transport: PublicMysTransport = fetch) 
     }, transport, async (response) => {
       if (!response.ok) {
         void response.body?.cancel().catch(() => undefined);
-        throw new Error("米游社公告接口不可用。");
+        throw new Error($t("mys-announcement-source.text_e23acb528a"));
       }
       return readAnnouncementFeed(await response.json(), limit, limit !== 10);
     });

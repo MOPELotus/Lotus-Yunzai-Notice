@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { decodeNoticeSegments, encodeNoticeContent, type NoticeReply, type NoticeSegment } from "./content.ts";
 
 const currentKey = "notice:current";
@@ -28,7 +31,7 @@ export type NoticeWriteReceipt =
 
 function activeNotice(id: string, entry: Record<string, string>): Notice | undefined {
   if (!entry.content?.trim() || !entry.timestamp || !entry.creator ||
-      ["已撤回", "recalled"].includes(entry.status ?? "")) return;
+      [$t("store.text_0462a8aa70"), "recalled"].includes(entry.status ?? "")) return;
 
   const notice = { id, content: entry.content, creator:entry.creator, status:entry.status, timestamp: entry.timestamp };
   if (!entry.segments) return notice;
@@ -38,65 +41,7 @@ function activeNotice(id: string, entry: Record<string, string>): Notice | undef
 
 // All mutations are serialized by Valkey. Check key types before issuing the
 // first mutation because errors during a Lua script do not roll back writes.
-const mutateScript = `
-local function expect_type(key, kind)
-  local actual = redis.call('TYPE', key).ok
-  return actual == 'none' or actual == kind
-end
-
-local op, prefix, new_id, content, creator, timestamp, now, segments = unpack(ARGV)
-if not expect_type(KEYS[1], 'string') or not expect_type(KEYS[2], 'list') then
-  return 'rejected'
-end
-
-local current = redis.call('GET', KEYS[1])
-if current and not string.match(current, '^%d%d%d%d%d[A-Z][A-Z][A-Z]$') then
-  return 'rejected'
-end
-local old = current and prefix .. current
-if old and not expect_type(old, 'hash') then
-  return 'rejected'
-end
-local status = old and redis.call('HGET', old, 'status')
-local alive = old and status ~= '已撤回' and status ~= 'recalled' and
-  redis.call('HEXISTS', old, 'content') == 1 and
-  redis.call('HEXISTS', old, 'timestamp') == 1 and
-  redis.call('HEXISTS', old, 'creator') == 1
-
-local function archive(state)
-  redis.call('HSET', old, 'status', state)
-  redis.call('LREM', KEYS[2], 0, current)
-  redis.call('LPUSH', KEYS[2], current)
-  redis.call('LTRIM', KEYS[2], 0, 49)
-end
-
-if op == 'publish' then
-  local target = prefix .. new_id
-  if new_id == current or redis.call('EXISTS', target) == 1 or redis.call('LPOS', KEYS[2], new_id) then
-    return 'collision'
-  end
-  if alive then archive('已归档') end
-  redis.call('HSET', target, 'content', content, 'creator', creator,
-    'timestamp', timestamp, 'status', '当前', 'push', '未推送', 'created', now)
-  if segments ~= '' then redis.call('HSET', target, 'segments', segments) end
-  redis.call('EXPIRE', target, 2592000)
-  redis.call('SET', KEYS[1], new_id)
-  return {new_id, creator, timestamp, '当前'}
-end
-
-if not alive then return false end
-if op == 'edit' then
-  local metadata = redis.call('HMGET', old, 'creator', 'timestamp')
-  redis.call('HSET', old, 'content', content)
-  if segments == '' then redis.call('HDEL', old, 'segments')
-  else redis.call('HSET', old, 'segments', segments) end
-  return {current, metadata[1], metadata[2], status or ''}
-elseif op == 'recall' then
-  archive('已撤回')
-  redis.call('DEL', KEYS[1])
-end
-return current
-`;
+const mutateScript = $t("store.text_3d8bc758d0");
 
 export function createNoticeStore(redis: NoticeRedis) {
   async function mutate(
@@ -169,7 +114,7 @@ export function createNoticeStore(redis: NoticeRedis) {
     write,
     async recall() {
       const receipt = await mutate("recall");
-      if (receipt === "rejected") throw new Error("公告存储键无效");
+      if (receipt === "rejected") throw new Error($t("store.text_87695daea3"));
       return typeof receipt === "string" && validId.test(receipt);
     },
   };

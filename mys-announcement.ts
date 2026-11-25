@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { Job } from "node-schedule";
 import type { CommandForward } from "../../lib/commands.ts";
 import { noticeAccounts, noticeAdapter, type NoticeAccount, type NoticeDeliveryHost, type NoticeDeliveryReply, type NoticeDeliverySegment } from "./delivery.ts";
@@ -107,7 +110,7 @@ export function createOfficialAnnouncements(
   const lifecycle = new AbortController();
   const active = signal ? AbortSignal.any([signal, lifecycle.signal]) : lifecycle.signal;
   let pending: ReturnType<typeof poll> | undefined;
-  const timer = new Job(() => { void run()?.catch(() => console.warn("[notice] 米游社公告推送失败。")); });
+  const timer = new Job(() => { void run()?.catch(() => console.warn($t("mys-announcement.text_1abf8a7618"))); });
 
   async function present(game: AnnouncementGame, post: OfficialAnnouncement, kind: AnnouncementKind, push = false): Promise<NoticeDeliveryReply> {
     const url = announcementArticleLink(game, post.id);
@@ -115,7 +118,7 @@ export function createOfficialAnnouncements(
     try {
       const article = await presentArticle(game, post.id, url, active);
       if (article?.pictures.length) {
-        const title = `${announcementGames[game].name}${announcementLabels[kind]}${push ? "推送" : ""}：${article.title}`;
+        const title = `${announcementGames[game].name}${announcementLabels[kind]}${push ? $t("mys-announcement.text_c757c9cc2d") : ""}：${article.title}`;
         return [{ type: "text", text: `${title}\n${url}` }, ...article.pictures];
       }
     } catch {
@@ -132,7 +135,7 @@ export function createOfficialAnnouncements(
     try {
       config = readConfig();
     } catch {
-      console.warn("[notice] 米游社公告推送配置无效，本轮暂停投递。");
+      console.warn($t("mys-announcement.text_d1c882d00d"));
       report.failed++;
       return report;
     }
@@ -254,15 +257,15 @@ export function createOfficialAnnouncements(
   function pushCommand(command: string, label: string, selected = games, channels: readonly AnnouncementPushKind[] = kinds,
     before?: () => Promise<void> | undefined) {
     return async (argument: string, context: Context) => {
-      if (argument.trim()) return `用法 ${command}`;
-      if (context.isDelegated) return `请直接发送 ${command}。`;
+      if (argument.trim()) return $t("mys-announcement.text_f40e1d7191", { "command": command });
+      if (context.isDelegated) return $t("mys-announcement.text_69effc2871", { "command": command });
       const authorized = context.authorizeOfficialNoticePush?.() ?? context.isMaster;
-      if (authorized !== true) return `仅机器人主人可触发${label}推送。`;
-      if (!getRedis()) return "公告存储未连接。";
+      if (authorized !== true) return $t("mys-announcement.text_c6fe4f2b60", { "label": label });
+      if (!getRedis()) return $t("mys-announcement.text_9579dede53");
       const report = await run(selected, channels, before);
-      if (!report || active.aborted) return `${label}推送正在处理或已停止。`;
-      const summary = `已确认 ${report.confirmed} 条，未发出 ${report.rejected} 条，结果未确认 ${report.unknown} 条，已去重 ${report.skipped} 条，异常 ${report.failed} 次。`;
-      return before ? `米游社公告和资讯\n${summary}` : summary;
+      if (!report || active.aborted) return $t("mys-announcement.text_eea71bdc52", { "label": label });
+      const summary = $t("mys-announcement.text_247ba41fa0", { "confirmed": report.confirmed, "rejected": report.rejected, "unknown": report.unknown, "skipped": report.skipped, "failed": report.failed });
+      return before ? $t("mys-announcement.text_3ab11af5c4", { "summary": summary }) : summary;
     };
   }
 
@@ -275,7 +278,7 @@ export function createOfficialAnnouncements(
   }
 
   function startTimer() {
-    if (getRedis() && !active.aborted && !timer.schedule(initial.cron)) throw new Error("米游社公告推送 cron 无效。");
+    if (getRedis() && !active.aborted && !timer.schedule(initial.cron)) throw new Error($t("mys-announcement.text_134d89ae1f"));
   }
 
   function cancel() { timer.cancel(); }
@@ -284,7 +287,7 @@ export function createOfficialAnnouncements(
     try {
       startTimer();
     } catch {
-      console.warn("[notice] 米游社公告推送 cron 无效。");
+      console.warn($t("mys-announcement.text_14111e3a0d"));
     }
   });
   if (!whenActive) {
@@ -303,25 +306,25 @@ export function createOfficialAnnouncements(
     const page = fixedPage ?? (input ? Number(input) : 1);
     if ((fixedPage !== undefined && input) || (fixedPage === undefined && input && !/^[1-9]\d*$/u.test(input)) ||
       !Number.isInteger(page) || page < 1 || page > 20) {
-      return `用法 #${name}${label} [1-20]`;
+      return $t("mys-announcement.text_03670a06f8", { "name": name, "label": label });
     }
     try {
       const posts = await feed(game, active, kind, 20);
       const post = posts[page - 1];
-      if (!posts.length) return `暂无${name}${label}。`;
-      return post ? await present(game, post, kind) : `仅有 ${posts.length} 条${name}${label}，请输入 1-${posts.length}。`;
+      if (!posts.length) return $t("mys-announcement.text_d21d2863c5", { "name": name, "label": label });
+      return post ? await present(game, post, kind) : $t("mys-announcement.text_7f0f5d6847", { "length": posts.length, "name": name, "label": label, "value4": posts.length });
     } catch {
-      return `米游社${label}暂不可用。`;
+      return $t("mys-announcement.text_b655331797", { "label": label });
     }
   }
   async function list(game: AnnouncementGame, kind: AnnouncementKind, argument: string): Promise<NoticeDeliveryReply> {
     const { name } = announcementGames[game];
     const label = announcementLabels[kind];
-    if (argument.trim()) return `用法 #${name}${label}列表`;
+    if (argument.trim()) return $t("mys-announcement.text_b33d6a8d75", { "name": name, "label": label });
     try {
       const posts = (await feed(game, active, kind, 5)).slice(0, 5);
-      if (!posts.length) return `暂无${name}${label}。`;
-      const links = [`${name}${label}列表`, ...posts.flatMap((post, index) => [
+      if (!posts.length) return $t("mys-announcement.text_d21d2863c5", { "name": name, "label": label });
+      const links = [$t("mys-announcement.text_e20a1fa7a4", { "name": name, "label": label }), ...posts.flatMap((post, index) => [
         `${index + 1}. ${post.title}`, announcementArticleLink(game, post.id),
       ])].join("\n");
       try {
@@ -332,7 +335,7 @@ export function createOfficialAnnouncements(
       }
       return links;
     } catch {
-      return `米游社${label}暂不可用。`;
+      return $t("mys-announcement.text_b655331797", { "label": label });
     }
   }
   async function articleReply(game: AnnouncementGame, id: string, title?: string): Promise<NoticeDeliveryReply | undefined> {
@@ -345,7 +348,8 @@ export function createOfficialAnnouncements(
       // Preserve the original link when the article or the card cannot be loaded.
     }
     if (active.aborted) return;
-    const text = `${article?.title ?? title ?? "米游社文章暂无法展开。"}\n${url}`;
+    const text = `${article?.title ?? title ?? $t("mys-announcement.text_cc1c3b535e")}
+${url}`;
     return article?.pictures.length ? [{ type: "text", text }, ...article.pictures] : text;
   }
 
@@ -368,8 +372,8 @@ export function createOfficialAnnouncements(
       }
     }
     if (active.aborted || nodes.length === 1) return;
-    if (missing || signal.aborted) nodes.push("部分原图暂不可用，可通过链接查看完整原文。");
-    return { type: "forward", senderName: "星铁星琼预估", nodes, batchSize: 3 };
+    if (missing || signal.aborted) nodes.push($t("mys-announcement.text_2f1366c8c5"));
+    return { type: "forward", senderName: $t("mys-announcement.text_5100350548"), nodes, batchSize: 3 };
   }
 
   async function fallback(normalizedMessage: string, context?: Context) {
@@ -385,14 +389,14 @@ export function createOfficialAnnouncements(
       try {
         const post = await estimate(estimateGame, active);
         if (active.aborted) return;
-        if (!post) return "暂无数据。";
+        if (!post) return $t("mys-announcement.text_ef3763ae26");
         if (estimateGame === "sr" && /预估$/u.test(normalizedMessage.trim())) {
           const gallery = await estimateGallery(post);
           if (gallery) return gallery;
         }
         return articleReply(estimateGame, post.id, post.title);
       } catch {
-        if (!active.aborted) return "米游社资源预估暂不可用。";
+        if (!active.aborted) return $t("mys-announcement.text_b09ca90f8f");
       }
       return;
     }
@@ -406,11 +410,11 @@ export function createOfficialAnnouncements(
     if ("error" in request) return request.error;
     try {
       const posts = await search(request.keyword, active);
-      if (!posts.length) return "没有搜到米游社文章，请换个关键词。";
+      if (!posts.length) return $t("mys-announcement.text_c71389ad81");
       const post = posts[request.offset];
-      return post ? articleReply("gs", post.id, post.title) : `仅有 ${posts.length} 条搜索结果。请输入第1到第${posts.length}条。`;
+      return post ? articleReply("gs", post.id, post.title) : $t("mys-announcement.text_25d3a2a2ba", { "length": posts.length, "value2": posts.length });
     } catch {
-      if (!active.aborted) return "米游社搜索暂不可用。";
+      if (!active.aborted) return $t("mys-announcement.text_6c7444e966");
     }
   }
 
@@ -421,37 +425,37 @@ export function createOfficialAnnouncements(
     const subscriptionNames = alternativeNames.filter(alias => alias !== "官方");
     for (const kind of kinds) {
       const label = announcementLabels[kind];
-      for (const [action, value] of [["开启", "on"], ["关闭", "off"]] as const) {
+      for (const [action, value] of [[$t("mys-announcement.text_8da97ddda9"), "on"], [$t("mys-announcement.text_3fd47edce4"), "off"]] as const) {
         const configure = async (argument: string, context: Context) => {
-          if (argument.trim()) return `用法 #${name}${action}${label}推送`;
-          if (context.message_type !== "group") return "推送请在群聊中设置。";
+          if (argument.trim()) return $t("mys-announcement.text_2f0664f20c", { "name": name, "action": action, "label": label });
+          if (context.message_type !== "group") return $t("mys-announcement.text_3f71e29e87");
           if (context.isMaster !== true && context.member?.is_admin !== true && context.member?.is_owner !== true) {
-            return `只有群管理员或机器人主人可以设置${label}推送。`;
+            return $t("mys-announcement.text_48d1700d89", { "label": label });
           }
           const botId = numberId(context.self_id);
           const groupId = numberId(context.group_id);
-          if (!botId || !groupId || !noticeAccounts(host).some((account) => account.botId === botId)) return "无法确认当前机器人和群聊。";
+          if (!botId || !groupId || !noticeAccounts(host).some((account) => account.botId === botId)) return $t("mys-announcement.text_ae2bd2f2c0");
           const redis = getRedis();
-          if (!redis) return "公告存储未连接。";
+          if (!redis) return $t("mys-announcement.text_9579dede53");
           try {
             await redis.eval("return redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])", {
               keys: [keyFor(game, kind)], arguments: [keyForTarget({ botId, groupId }), value],
             });
-            return `${name}${label}推送已${action}。`;
+            return $t("mys-announcement.text_be4486aad5", { "name": name, "label": label, "action": action });
           } catch {
-            return `无法保存${label}推送设置，请稍后重试。`;
+            return $t("mys-announcement.text_9b9101dcd6", { "label": label });
           }
         };
-        const command = `${name}${action}${label}推送`;
+        const command = $t("mys-announcement.text_c1d233aaef", { "name": name, "action": action, "label": label });
         commands[`#${command}`] = configure;
         aliases[command] = `#${command}`;
         for (const alternative of subscriptionNames) {
-          const spelling = `${alternative}${action}${label}推送`;
+          const spelling = $t("mys-announcement.text_db2b052b10", { "alternative": alternative, "action": action, "label": label });
           aliases[`#${spelling}`] = `#${command}`;
           aliases[spelling] = `#${command}`;
         }
         if (game === "gs") {
-          const short = `${action}${label}推送`;
+          const short = $t("mys-announcement.text_6990de13a3", { "action": action, "label": label });
           commands[`#${short}`] = configure;
           aliases[short] = `#${short}`;
         }
@@ -475,7 +479,7 @@ export function createOfficialAnnouncements(
     }
   }
   function fullPushCommand(advanceActivity: () => Promise<void> | undefined) {
-    return { [pushAllCommand]: pushCommand(pushAllCommand, "米游社全部", games, kinds, advanceActivity) };
+    return { [pushAllCommand]: pushCommand(pushAllCommand, $t("mys-announcement.text_079f1aa96c"), games, kinds, advanceActivity) };
   }
   return { commands, aliases, fallback, run, dispose, fullPushCommand };
 }

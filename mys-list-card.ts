@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { builtinResourceDirectory } from "../../lib/builtin-resources.ts";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
@@ -73,10 +76,10 @@ export function createAnnouncementListRenderer(root: URL, transport: typeof fetc
       })),
     ]);
     active.throwIfAborted();
-    const name = game === "sr" ? "崩坏星穹铁道" : announcementGames[game].name;
-    const title = `米游社·${name}${announcementLabels[kind]}列表`;
+    const name = game === "sr" ? $t("mys-list-card.text_8b0c294909") : announcementGames[game].name;
+    const title = $t("mys-list-card.text_0f57cd62dd", { "name": name, "value2": announcementLabels[kind] });
     const command = `#${announcementGames[game].name}${announcementLabels[kind]}`;
-    const footer = `详情内容使用 ${command} 加上序号查看，如 ${command}2`;
+    const footer = $t("mys-list-card.text_017825b859", { "command": command, "value2": command });
     const bannerHeight = banner ? 118 : 0;
     const paint = (scale: 4 | 2) => renderInfoCard({ title }, ({ x, y, width, measure }) => {
       const imageX = x + width - 20 - thumbWidth;

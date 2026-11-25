@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { readFileSync } from "node:fs";
 import type { ActivityGame } from "./mys-activity-source.ts";
 import { announcementGameKeys, type AnnouncementGame } from "./mys-announcement-source.ts";
@@ -21,12 +24,12 @@ export const announcementConfigPaths = ["config/mys.pushNews.yaml", "config/conf
   "plugins/genshin/config/mys.pushNews.yaml"] as const;
 
 const defaultBan = {
-  gs: "冒险助力礼包|纪行|预下载|脚本外挂|集中反馈|已开奖|云·原神|魔神任务|传说任务|线下赛|晋级赛|战绩更新|海选赛|邀请赛|积分赛|战绩工具|交流平台|首日赛|线上赛|社区内容|个人专访|全民赛|决赛|总决赛|半决赛|淘汰赛|作品展示|同人|大别野",
-  sr: "预下载|脚本外挂|集中反馈|已开奖|问题说明|意见反馈|账号封禁|工具|直播预告|获奖名单|大别野",
-  zzz: "作品展示|已开奖|大别野",
-  bbb: "封禁名单|大别野|马克兔速报|预下载",
-  bb: "已开奖|大别野",
-  wd: "大别野|已开奖",
+  gs: $t("mys-announcement-config.text_33fdfe8eac"),
+  sr: $t("mys-announcement-config.text_24feea59e9"),
+  zzz: $t("mys-announcement-config.text_e97f29d854"),
+  bbb: $t("mys-announcement-config.text_806ef05927"),
+  bb: $t("mys-announcement-config.text_7e65230203"),
+  wd: $t("mys-announcement-config.text_0cbb0c83be"),
 };
 
 export function numberId(value: unknown): number | undefined {
@@ -36,7 +39,7 @@ export function numberId(value: unknown): number | undefined {
 
 function mapping(value: unknown): Record<string, unknown> {
   if (value === null || value === undefined) return {};
-  if (typeof value !== "object" || Array.isArray(value)) throw new Error("米游社推送配置须为 YAML 映射。");
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error($t("mys-announcement-config.text_367402e74f"));
   return value as Record<string, unknown>;
 }
 
@@ -44,9 +47,9 @@ export function configuredTargets(value: unknown): AnnouncementTarget[] {
   const targets: AnnouncementTarget[] = [];
   for (const [bot, groups] of Object.entries(mapping(value))) {
     const botId = numberId(bot);
-    if (!botId || !Array.isArray(groups)) throw new Error("米游社推送目标格式无效。");
+    if (!botId || !Array.isArray(groups)) throw new Error($t("mys-announcement-config.text_5a55715852"));
     for (const groupId of new Set(groups.map(numberId))) {
-      if (!groupId) throw new Error("米游社推送群号无效。");
+      if (!groupId) throw new Error($t("mys-announcement-config.text_f5b8efe05f"));
       targets.push({ botId, groupId });
     }
   }
@@ -58,7 +61,7 @@ export function parseAnnouncementConfig(yaml = "{}"): AnnouncementConfig {
   const cron = config.pushTime ?? "0 0/5 * * * ?";
   const maxNum = config.maxNum ?? 1;
   if (typeof cron !== "string" || typeof maxNum !== "number" || !Number.isSafeInteger(maxNum) || maxNum < 0) {
-    throw new Error("米游社推送定时或条数配置无效。");
+    throw new Error($t("mys-announcement-config.text_47bc57916c"));
   }
 
   const words = mapping(config.banWord);
@@ -78,7 +81,7 @@ export function parseAnnouncementConfig(yaml = "{}"): AnnouncementConfig {
     try {
       activityTargets[game] = configuredTargets(config[`${game}ActivityPush`]);
     } catch {
-      console.warn(`[notice] 无法读取 ${game === "gs" ? "原神" : "星铁"}活动到期推送目标。`);
+      console.warn($t("mys-announcement-config.text_5d53a57803", { "value1": game === "gs" ? $t("mys-announcement-config.text_d1597c51ed") : $t("mys-announcement-config.text_a2927891f0") }));
     }
   }
   return { cron, maxNum, ban, targets, infoTargets, activityTargets };

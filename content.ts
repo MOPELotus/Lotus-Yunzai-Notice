@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 export type NoticeSegment =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "image"; readonly file: string };
@@ -38,9 +41,9 @@ function limits(parts: readonly NoticeSegment[]): string | undefined {
       imageAddressLength += part.file.length;
     }
   }
-  if (!hasText && !images) return "请输入公告内容。";
-  if (characters > maxTextCharacters) return `公告内容最多 ${maxTextCharacters} 个字符。`;
-  if (images > maxImages || imageAddressLength > maxImageAddressLength) return "公告图片数量或大小超出限制。";
+  if (!hasText && !images) return $t("content.text_031866ba52");
+  if (characters > maxTextCharacters) return $t("content.text_52b72bd39c", { "maxTextCharacters": maxTextCharacters });
+  if (images > maxImages || imageAddressLength > maxImageAddressLength) return $t("content.text_58d7572414");
 }
 
 function fold(parts: readonly NoticeSegment[]): NoticeReply {
@@ -64,13 +67,13 @@ export function parseNoticeInput(
   let leadingText = "";
   while (message[start]?.type === "text") {
     const candidate = message[start++]?.text;
-    if (typeof candidate !== "string") return { error: "公告文字格式无效。" };
+    if (typeof candidate !== "string") return { error: $t("content.text_c7aa29358f") };
     leadingText += candidate;
   }
   const head = leadingText.trimStart();
   const suffix = head.slice(command.length);
   if (!head.startsWith(command) || (!allowAdjacentText && suffix && !/^\s/u.test(suffix))) {
-    return { error: "请将公告指令放在文字或图片之前。" };
+    return { error: $t("content.text_195433889b") };
   }
 
   const parts: NoticeSegment[] = [];
@@ -80,10 +83,10 @@ export function parseNoticeInput(
       parts.push({ type: "text", text: part.text });
     } else if (part.type === "image") {
       const file = imageAddress(part.url) ?? imageAddress(part.file);
-      if (!file) return { error: "公告图片需要 HTTPS 地址或 base64 数据。" };
+      if (!file) return { error: $t("content.text_b57247c2d5") };
       parts.push({ type: "image", file });
     } else {
-      return { error: "公告正文只支持文字和图片。" };
+      return { error: $t("content.text_bb1f54a745") };
     }
   }
   while (parts.at(-1)?.type === "text") {
@@ -101,7 +104,7 @@ export function parseNoticeInput(
 }
 
 function plainText(parts: readonly NoticeSegment[]): string {
-  return parts.map((part) => part.type === "text" ? part.text : "[图片]").join("");
+  return parts.map((part) => part.type === "text" ? part.text : $t("content.text_a71f445d35")).join("");
 }
 
 export function encodeNoticeContent(content: NoticeReply): { text: string; segments: string } {

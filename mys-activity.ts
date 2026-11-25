@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { Job } from "node-schedule";
@@ -9,7 +12,7 @@ import { createActivityExpirySource, type ActivityGame, type UpcomingExpiry } fr
 import type { NoticeRedis } from "./store.ts";
 
 const games = ["sr","gs"] as const;
-const names = { gs:"原神", sr:"星铁" };
+const names = { gs:$t("mys-activity.text_d1597c51ed"), sr:$t("mys-activity.text_a2927891f0") };
 const targetKey = (game: ActivityGame) => `lotus-yunzai:notice:mys:${game}:activity-targets`;
 const legacyQueue = (botId: number) => `Yz:apgl:${botId}`;
 const local = (now: number) => new Date(now + 8*3_600_000);
@@ -70,20 +73,20 @@ interface ActivityDestination {
 function activityQueue(raw: string, date: string, defaults: readonly number[]): number[] {
   if (!raw) return [...defaults];
   const entry = JSON.parse(raw) as { date?: unknown; GroupList?: unknown };
-  if (!entry || typeof entry !== "object" || typeof entry.date !== "string") throw new Error("旧活动队列无效");
+  if (!entry || typeof entry !== "object" || typeof entry.date !== "string") throw new Error($t("mys-activity.text_189e615869"));
   if (entry.date !== date) return [...defaults];
-  if (!Array.isArray(entry.GroupList)) throw new Error("旧活动队列无效");
+  if (!Array.isArray(entry.GroupList)) throw new Error($t("mys-activity.text_189e615869"));
   const groups = entry.GroupList.map(numberId);
-  if (groups.some(id=>!id)) throw new Error("旧活动队列含无效群号");
+  if (groups.some(id=>!id)) throw new Error($t("mys-activity.text_c62ae5831c"));
   return [...new Set(groups)] as number[];
 }
 
 function expiryMessage(game: ActivityGame, event: UpcomingExpiry, now: number): NoticeReply {
-  const initial = `【${names[game]}活动即将结束通知】\n活动 ${event.subtitle}`;
+  const initial = $t("mys-activity.text_750034ad8a", { "value1": names[game], "subtitle": event.subtitle });
   const remaining = Math.max(0, Math.floor((event.end-now)/1000));
   const days = Math.floor(remaining/86400), hours = Math.floor(remaining/3600)%24;
   const minutes = Math.floor(remaining/60)%60;
-  const body = `\n描述 ${event.title}\n活动剩余时间 ${days}天${hours}小时${minutes}分钟${remaining%60}秒\n活动结束时间 ${chinaTime(event.end)}`;
+  const body = $t("mys-activity.text_caa83a5821", { "title": event.title, "days": days, "hours": hours, "minutes": minutes, "value5": remaining%60, "value6": chinaTime(event.end) });
   return event.image ? [{type:"text",text:initial},{type:"image",file:event.image},{type:"text",text:body}] : initial+body;
 }
 
@@ -104,7 +107,7 @@ export function createActivityExpiryNotices(
   function arm() {
     if (ready && !active.aborted && !armed && getRedis()) {
       armed = Boolean(job.schedule(initial.cron));
-      if (!armed) console.warn("[notice] 活动到期推送定时配置无效。");
+      if (!armed) console.warn($t("mys-activity.text_c5ff14e7be"));
     }
   }
   function start() {
@@ -124,7 +127,7 @@ export function createActivityExpiryNotices(
           return;
         }
       }
-    })().catch(() => { if (!active.aborted) console.warn("[notice] 无法读取活动到期推送目标。"); });
+    })().catch(() => { if (!active.aborted) console.warn($t("mys-activity.text_7b176cfaf3")); });
   }
   const cancelActivation = whenActive?.(start);
   if (!whenActive) start();
@@ -141,7 +144,7 @@ export function createActivityExpiryNotices(
     for (const game of games) {
       if (active.aborted) return;
       const gameTargets = await effectiveAnnouncementTargets(redis, config.activityTargets[game], targetKey(game)).catch(() => {
-        if (!active.aborted) console.warn(`[notice] 无法读取${names[game]}活动到期推送目标。`);
+        if (!active.aborted) console.warn($t("mys-activity.text_e03f3b9e17", { "value1": names[game] }));
         return [];
       });
       for (const { botId, groupId } of gameTargets) {
@@ -166,7 +169,7 @@ export function createActivityExpiryNotices(
         const groupId = configured.find(id=>current.has(id));
         if (groupId !== undefined) destinations.push({account,raw,queue,groupId,selected:groups.get(groupId)!});
       } catch {
-        if (!active.aborted) console.warn("[notice] 活动到期队列或群列表不可用。");
+        if (!active.aborted) console.warn($t("mys-activity.text_c4b1d6d798"));
       }
     }
     const sources = new Map<ActivityGame,readonly UpcomingExpiry[]>();
@@ -174,7 +177,7 @@ export function createActivityExpiryNotices(
       if (active.aborted) return;
       if (!destinations.some(({selected})=>selected.has(game))) continue;
       try { sources.set(game,await feed(game,active,at)); }
-      catch { if (!active.aborted) console.warn(`[notice] 无法读取${names[game]}活动结束时间。`); }
+      catch { if (!active.aborted) console.warn($t("mys-activity.text_447cc117f7", { "value1": names[game] })); }
     }
     for (const target of destinations) {
       if (active.aborted || chinaDay(now()) !== date) return;
@@ -252,31 +255,31 @@ export function createActivityExpiryNotices(
   function run() {
     if (!ready || active.aborted || pending) return pending;
     pending = poll().catch(() => {
-      if (!active.aborted) console.warn("[notice] 活动到期推送未完成。");
+      if (!active.aborted) console.warn($t("mys-activity.text_f746555b58"));
     }).finally(() => { pending = undefined; });
     return pending;
   }
 
   const commands: Record<string,(argument:string,context:Context)=>Promise<NoticeReply>> = {};
-  for (const game of games) for (const [label,value] of [["开启","on"],["关闭","off"]] as const) {
+  for (const game of games) for (const [label,value] of [[$t("mys-activity.text_8da97ddda9"),"on"],[$t("mys-activity.text_3fd47edce4"),"off"]] as const) {
     const prefix = `#${names[game]}${label}到期活动`;
     const change = async (argument:string, context:Context) => {
-      if (argument.trim()) return `用法 ${prefix}推送`;
-      if (context.message_type !== "group") return "活动到期推送请在群聊中设置。";
-      if (!context.isMaster && !context.member?.is_admin && !context.member?.is_owner) return "只有群管理员或机器人主人可以设置到期活动推送。";
+      if (argument.trim()) return $t("mys-activity.text_8c8773a26b", { "prefix": prefix });
+      if (context.message_type !== "group") return $t("mys-activity.text_f03714ff7b");
+      if (!context.isMaster && !context.member?.is_admin && !context.member?.is_owner) return $t("mys-activity.text_d8b6e222d2");
       const botId = numberId(context.self_id), groupId = numberId(context.group_id);
-      if (!botId || !groupId || !noticeAccounts(host).some(account=>account.botId===botId)) return "无法确认当前机器人和群聊。";
+      if (!botId || !groupId || !noticeAccounts(host).some(account=>account.botId===botId)) return $t("mys-activity.text_ae2bd2f2c0");
       const redis = getRedis();
-      if (!redis) return "公告存储未连接。";
+      if (!redis) return $t("mys-activity.text_9579dede53");
       try {
         await redis.eval("return redis.call('HSET',KEYS[1],ARGV[1],ARGV[2])",{
           keys:[targetKey(game)],arguments:[`${botId}:${groupId}`,value],
         });
         if (value === "on") arm();
-        return `${names[game]}活动到期推送已${label}。`;
-      } catch { return "无法保存活动推送设置，请稍后重试。"; }
+        return $t("mys-activity.text_b193168ee7", { "value1": names[game], "label": label });
+      } catch { return $t("mys-activity.text_df10a97a31"); }
     };
-    for (const ending of ["","预警","推送","预警推送"]) commands[prefix+ending] = change;
+    for (const ending of ["",$t("mys-activity.text_75d5781e08"),$t("mys-activity.text_c757c9cc2d"),$t("mys-activity.text_ff0954485e")]) commands[prefix+ending] = change;
   }
   return {
     commands, run,

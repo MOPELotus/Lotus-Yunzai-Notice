@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import type { PngRender } from "@lotus-yunzai/skia";
 import { renderInfoCard, type InfoCardBodyLayout } from "@lotus-yunzai/skia/info-card";
 import QRCode from "qrcode";
@@ -13,7 +16,7 @@ const maxImages = 18;
 const maxEmoticonImages = 24;
 const maxPages = 10;
 const countLabel = (value: number | undefined) =>
-  value === undefined ? "—" : value > 10_000 ? `${(value / 10_000).toFixed(2)}万` : String(value);
+  value === undefined ? "—" : value > 10_000 ? $t("mys-article-card.text_b2e8dfa288", { "value1": (value / 10_000).toFixed(2) }) : String(value);
 
 interface DrawRow {
   readonly height: number;
@@ -42,14 +45,14 @@ function articleRows(article: OfficialArticle, url: string, images: ReadonlyMap<
   const right = x + width - paperPadding;
   const lineWidth = right - left;
   const center = x + width / 2;
-  const statistics = article.counts.map((count, i) => `${["浏览", "点赞", "评论"][i]} ${countLabel(count)}`).join("    ");
+  const statistics = article.counts.map((count, i) => `${[$t("mys-article-card.text_a8c81f93f2"), $t("mys-article-card.text_aced5d7f9f"), $t("mys-article-card.text_6849b8254d")][i]} ${countLabel(count)}`).join("    ");
   const rows: DrawRow[] = [{ height: 160, draw(ctx, y) {
     qr(ctx, url, right - 130, y);
-    text(ctx, "来自版块：", left, y + 14, 22, "#555");
+    text(ctx, $t("mys-article-card.text_0882606c89"), left, y + 14, 22, "#555");
     const forum = wrapped(measure, article.forum ?? "", lineWidth - 275, 22, false)[0] ?? "";
     text(ctx, forum, left + 111, y + 14, 22, "#956300");
     text(ctx, statistics, left, y + 56, 21, "#555");
-    text(ctx, `文章发表：${dateFormat.format(article.created * 1000)}`, left, y + 98, 22, "#555");
+    text(ctx, $t("mys-article-card.text_21a0488201", { "value1": dateFormat.format(article.created * 1000) }), left, y + 98, 22, "#555");
     ctx.fillStyle = "#ddd";
     ctx.fillRect(left, y + 142, lineWidth, 1);
   } }];
@@ -78,7 +81,7 @@ function articleRows(article: OfficialArticle, url: string, images: ReadonlyMap<
     }
     const image = images.get(block.url);
     if (!image) {
-      pushText(block.alt ? `[图片] ${block.alt}` : "[图片暂不可用]", 21, 34, "#777", "center");
+      pushText(block.alt ? $t("mys-article-card.text_1d87d47e95", { "alt": block.alt }) : $t("mys-article-card.text_2c892064bb"), 21, 34, "#777", "center");
       continue;
     }
     // Reserve space for the continuation header and footer without slicing or stretching the original image.
@@ -154,11 +157,11 @@ export async function renderOfficialArticle(article: OfficialArticle, url: strin
     let rows: DrawRow[] | undefined;
     const pages: PngRender[] = [];
     do {
-      if (pages.length === maxPages) throw new Error("米游社文章过长，请打开原文查看。");
+      if (pages.length === maxPages) throw new Error($t("mys-article-card.text_8236698f91"));
       active.throwIfAborted();
       const header = pages.length === 0
         ? { title: article.title, eyebrow: author, metadata: article.certification, icon: avatar }
-        : { title: `正文续页 · 第 ${pages.length + 1} 页` };
+        : { title: $t("mys-article-card.text_04672a3887", { "value1": pages.length + 1 }) };
       const picture = await renderInfoCard(header, (layout) => {
         rows ??= articleRows(article, url, images, layout);
         const { x, y, width, bottomPadding } = layout;
@@ -169,7 +172,7 @@ export async function renderOfficialArticle(article: OfficialArticle, url: strin
           height += rows[cursor++]!.height;
         }
         // The first header can span more lines than a continuation title.
-        if (cursor === start && pages.length > 0) throw new Error("米游社文章分页超限，请打开原文查看。");
+        if (cursor === start && pages.length > 0) throw new Error($t("mys-article-card.text_664e075976"));
         const page = rows.slice(start, cursor);
         return { height, draw(ctx) {
           ctx.fillStyle = "#fff";
@@ -189,7 +192,7 @@ export async function renderOfficialArticle(article: OfficialArticle, url: strin
   }
 
   const rendered = await renderPages(4) ?? await renderPages(2);
-  if (!rendered) throw new Error("米游社文章图片过大，请打开原文查看。");
+  if (!rendered) throw new Error($t("mys-article-card.text_d275e22dc8"));
   active.throwIfAborted();
   return rendered.map(({ png, engine }) => {
     onRendered?.(engine);

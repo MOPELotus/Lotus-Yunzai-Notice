@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { withReadRetries } from "@lotus-yunzai/http";
 
 export type PublicMysTransport = (url: URL, init: RequestInit) => Promise<Response>;
@@ -60,5 +63,5 @@ export async function readPublicMys<T>({ url, alternate, signal, phaseMs, accept
       throw error;
     }
   }
-  throw new Error("米游社公开接口不可用。");
+  throw new Error($t("mys-public-request.text_37b030a189"));
 }

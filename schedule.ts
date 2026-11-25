@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createNoticeDelivery, noticeAccounts, type NoticeDeliveryHost } from "./delivery.ts";
@@ -48,7 +51,7 @@ function scheduleMapping(yaml: string, allowEmpty = false): Record<string, unkno
   const parsed: unknown = Bun.YAML.parse(yaml);
   if (allowEmpty && parsed == null) return {};
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("公告定时配置须为 YAML 映射");
+    throw new Error($t("schedule.text_c548323c28"));
   }
   return parsed as Record<string, unknown>;
 }
@@ -57,12 +60,12 @@ function scheduleWindow(config: Record<string, unknown>): Window | undefined {
   const { enableSchedule, scheduleTime = "8:00-8:30" } = config;
   if (enableSchedule === false) return;
   if (enableSchedule !== undefined && enableSchedule !== true) {
-    throw new Error("enableSchedule 须为布尔值");
+    throw new Error($t("schedule.text_55b78ceb8a"));
   }
   const hours = typeof scheduleTime === "string"
     ? /^(\d{1,2}):(\d{2})\s*-\s*(?:(\d{1,2}):)?(\d{1,2})$/u.exec(scheduleTime.trim())
     : null;
-  if (!hours) throw new Error("scheduleTime 格式须为 HH:mm-HH:mm");
+  if (!hours) throw new Error($t("schedule.text_0d417f1d3a"));
 
   const startHour = Number(hours[1]);
   const startMinute = Number(hours[2]);
@@ -71,7 +74,7 @@ function scheduleWindow(config: Record<string, unknown>): Window | undefined {
   const start = startHour * 60 + startMinute;
   const end = endHour * 60 + endMinute;
   if (startHour > 23 || endHour > 23 || startMinute > 59 || endMinute > 59 || end < start) {
-    throw new Error("公告定时窗口无效");
+    throw new Error($t("schedule.text_a417ac2338"));
   }
   return { start, end };
 }
@@ -94,7 +97,7 @@ export function configuredNoticeSchedule(
   explicit = Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG,
 ): Window | undefined {
   return configuredNoticeValue(root, explicit, scheduleWindow, (left, right) =>
-    left?.start === right?.start && left?.end === right?.end, "两处旧公告定时配置不一致，请在 config/notice.yaml 指定使用的窗口");
+    left?.start === right?.start && left?.end === right?.end, $t("schedule.text_a25c6b407b"));
 }
 
 export function configuredNoticeLogLevel(
@@ -102,7 +105,7 @@ export function configuredNoticeLogLevel(
   explicit = Bun.env.LOTUS_NOTICE_SCHEDULE_CONFIG,
 ): NoticeLogLevel {
   return configuredNoticeValue(root, explicit, ({ logger }) => isNoticeLogLevel(logger) ? logger : "info",
-    (left, right) => left === right, "两处旧公告日志级别不一致，请在 config/notice.yaml 指定使用的级别") ?? "info";
+    (left, right) => left === right, $t("schedule.text_7e5a6d7f20")) ?? "info";
 }
 
 function configuredNoticeValue<T>(root: URL, explicit: string | undefined, project: (config: Record<string, unknown>) => T,
@@ -141,19 +144,7 @@ function nextSlot(now: number, window: Window) {
   return now < today.at + minute ? today : slotFor(dayFormat.format(now + day));
 }
 
-const claimDay = `
-if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
-if ARGV[1] == '' or redis.call('GET', KEYS[2]) ~= ARGV[1] or
-  redis.call('HGET', KEYS[3], 'content') ~= ARGV[2] or
-  (redis.call('HGET', KEYS[3], 'segments') or '') ~= ARGV[4] or
-  redis.call('HGET', KEYS[3], 'status') ~= '当前' or
-  redis.call('HGET', KEYS[3], 'push') ~= '未推送' then
-  redis.call('SET', KEYS[1], '{"state":"skipped"}', 'EX', 3024000)
-  return -1
-end
-redis.call('SET', KEYS[1], ARGV[3], 'EX', 3024000)
-return 1
-`;
+const claimDay = $t("schedule.text_e3ad87f7b8");
 
 const finishDay = `
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
@@ -180,12 +171,12 @@ async function deliverScheduled(
 
   let state = "error";
   try {
-    log("info", `定时公告 ${noticeId} 开始推送。`);
+    log("info", $t("schedule.text_303afbe194", { "noticeId": noticeId }));
     const result = await createNoticeDelivery(redis, host).push(signal, notice, accounts);
     state = result.stopped ?? (result.selected ? "completed" : "no-targets");
     const confirmed = result.receipts.filter(receipt => receipt.state === "confirmed").length;
     const level = result.stopped === "storage-error" ? "error" : result.stopped || result.discoveryFailures ? "warn" : "info";
-    log(level, `定时公告 ${noticeId} · 确认送达 ${confirmed} · 目标 ${result.selected} · 跳过 ${result.alreadyClaimed}。`);
+    log(level, $t("schedule.text_3782c14324", { "noticeId": noticeId, "confirmed": confirmed, "selected": result.selected, "alreadyClaimed": result.alreadyClaimed }));
   } finally {
     await redis.eval(finishDay, {
       keys: [key], arguments: [started, JSON.stringify({ state, noticeId })],
@@ -226,7 +217,7 @@ export function startNoticeScheduler(
       active = (redis && inSlot()
         ? deliverScheduled(redis, host, slot.date, controller.signal, inSlot, log)
         : Promise.resolve()).catch(() => {
-        log("warn", "定时公告执行未完成。");
+        log("warn", $t("schedule.text_e0583bdb59"));
       }).then((result) => {
         arm(result === "awaiting-account" ? Math.min(end, timer.now() + accountRetryDelay) : end);
       });

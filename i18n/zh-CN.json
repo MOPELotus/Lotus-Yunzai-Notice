@@ -1,0 +1,677 @@
+{
+  "language": "zh-CN",
+  "name": "简体中文",
+  "namespace": "notice",
+  "description": "订阅推送",
+  "sections": {
+    "content": {
+      "description": "订阅推送",
+      "source": "plugins/notice/content.ts"
+    },
+    "delivery": {
+      "description": "订阅推送",
+      "source": "plugins/notice/delivery.ts"
+    },
+    "index": {
+      "description": "订阅推送",
+      "source": "plugins/notice/index.ts"
+    },
+    "mys-activity": {
+      "description": "订阅推送",
+      "source": "plugins/notice/mys-activity.ts"
+    },
+    "mys-activity-source": {
+      "description": "订阅推送",
+      "source": "plugins/notice/mys-activity-source.ts"
+    },
+    "mys-announcement": {
+      "description": "订阅推送",
+      "source": "plugins/notice/mys-announcement.ts"
+    },
+    "mys-announcement-config": {
+      "description": "订阅推送：配置",
+      "source": "plugins/notice/mys-announcement-config.ts"
+    },
+    "mys-announcement-source": {
+      "description": "订阅推送",
+      "source": "plugins/notice/mys-announcement-source.ts"
+    },
+    "mys-article-card": {
+      "description": "订阅推送：图片卡片",
+      "source": "plugins/notice/mys-article-card.ts"
+    },
+    "mys-emoticon-source": {
+      "description": "订阅推送",
+      "source": "plugins/notice/mys-emoticon-source.ts"
+    },
+    "mys-list-card": {
+      "description": "订阅推送：图片卡片",
+      "source": "plugins/notice/mys-list-card.ts"
+    },
+    "mys-public-query": {
+      "description": "订阅推送",
+      "source": "plugins/notice/mys-public-query.ts"
+    },
+    "mys-public-request": {
+      "description": "订阅推送：请求",
+      "source": "plugins/notice/mys-public-request.ts"
+    },
+    "mys-search-source": {
+      "description": "订阅推送",
+      "source": "plugins/notice/mys-search-source.ts"
+    },
+    "schedule": {
+      "description": "订阅推送：排期",
+      "source": "plugins/notice/schedule.ts"
+    },
+    "store": {
+      "description": "订阅推送",
+      "source": "plugins/notice/store.ts"
+    },
+    "target-commands": {
+      "description": "订阅推送：命令",
+      "source": "plugins/notice/target-commands.ts"
+    },
+    "targets": {
+      "description": "订阅推送",
+      "source": "plugins/notice/targets.ts"
+    }
+  },
+  "messages": {
+    "content.text_031866ba52": "请输入公告内容。",
+    "content.text_195433889b": "请将公告指令放在文字或图片之前。",
+    "content.text_52b72bd39c": "公告内容最多 {maxTextCharacters} 个字符。",
+    "content.text_58d7572414": "公告图片数量或大小超出限制。",
+    "content.text_a71f445d35": "[图片]",
+    "content.text_b57247c2d5": "公告图片需要 HTTPS 地址或 base64 数据。",
+    "content.text_bb1f54a745": "公告正文只支持文字和图片。",
+    "content.text_c7aa29358f": "公告文字格式无效。",
+    "delivery.text_46a2dcf3e2": "公告投递回执格式无效",
+    "delivery.text_4ab1381a03": "公告撤回回执格式无效",
+    "delivery.text_4b6ff4a59f": "公告目标群无效",
+    "delivery.text_b4c326532c": "【公告通知】\n",
+    "delivery.text_c483ca126d": "\nlocal previous = redis.call('HGET', KEYS[1], ARGV[1])\nif previous and cjson.decode(previous).state ~= 'not-sent' then return 0 end\nif redis.call('GET', KEYS[2]) ~= ARGV[2] or redis.call('HGET', KEYS[3], 'content') ~= ARGV[3] or\n  (redis.call('HGET', KEYS[3], 'segments') or '') ~= ARGV[5] then\n  return -1\nend\nlocal status = redis.call('HGET', KEYS[3], 'status')\nif status == '已撤回' or status == 'recalled' then return -1 end\nredis.call('HSET', KEYS[1], ARGV[1], ARGV[4])\nlocal ttl = redis.call('PTTL', KEYS[3])\nif ttl >= 0 then\n  redis.call('PEXPIRE', KEYS[1], ttl + 2592000000)\nelse\n  redis.call('PERSIST', KEYS[1])\nend\nreturn 1\n",
+    "delivery.text_c9640f69c3": "公告编号无效",
+    "delivery.text_d803cb90b6": "\nif redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then return 0 end\nredis.call('HSET', KEYS[1], ARGV[1], ARGV[3])\nif ARGV[4] == 'confirmed' and redis.call('TYPE', KEYS[2]).ok == 'hash' then\n  redis.call('HSET', KEYS[2], 'push', '已推送')\nend\nreturn 1\n",
+    "index.text_008627ff5f": "确认送达 · 消息 {messageId}",
+    "index.text_00b363e84f": "已发公告撤回未完成，请查看回执。",
+    "index.text_01a3c9774b": "当前没有可撤回的公告。",
+    "index.text_0518365699": "编辑",
+    "index.text_054a4c71f9": "用法 #全部历史公告 [页码]，每页十条",
+    "index.text_068c588dde": "无法读取公告定时配置，定时推送未启动。",
+    "index.text_0878dc62cb": "群 {groupId} · 机器人 {botId} · {value3}",
+    "index.text_09ecd4d4f3": "发送 #公告推送回执 {noticeId} 查看逐群结果。",
+    "index.text_0a85ce3ac7": "没有找到对应的历史公告。",
+    "index.text_0da2c438ca": "用法：#撤回已发公告 [编号] [群号]",
+    "index.text_1075a9178b": "等待确认或进程中断",
+    "index.text_1251d3b7e5": "公告发生变更，已停止后续发送。",
+    "index.text_1d929f55ba": "#历史公告 [编号] 查看历史公告",
+    "index.text_1ecef0a69d": "投递记录写入未确认，已停止后续发送。",
+    "index.text_1fd24f13e1": "发送 #公告推送回执 {noticeId} 查看逐群回执。",
+    "index.text_21213a9551": "#公告全局白名单/黑名单 添加/删除/查看",
+    "index.text_2a41f2574e": "仅机器人主人可管理公告。",
+    "index.text_2b70c269ae": "状态: {status}",
+    "index.text_2e42d76eee": "公告 {noticeId} 推送回执（{page}/{pages} 页）",
+    "index.text_30762d3660": "#撤回已发公告 [编号] [群号]",
+    "index.text_31c810e05a": "历史公告",
+    "index.text_34cacb6dae": "没有公告推送回执。",
+    "index.text_3782d8a59e": "#编辑公告 <内容>",
+    "index.text_3ae64658f7": "发布者 {creator}",
+    "index.text_3d2ef05af4": "撤回已确认",
+    "index.text_4302a17289": "当前没有可推送的公告。",
+    "index.text_45aa3ff05f": "无法读取独立公告日志配置，使用默认级别 info。",
+    "index.text_48e31ef421": "确认未发出",
+    "index.text_4f6d3657e7": "其余 {value1} 个群见逐群回执。",
+    "index.text_51b5f40228": "请直接发送 #推送公告。",
+    "index.text_55a1d9bcb5": "发布者: {creator}",
+    "index.text_56e6e2ef8f": "已跳过 {alreadyClaimed} 条已有撤回记录的消息。",
+    "index.text_57f56b207c": "{discoveryFailures} 个机器人未能读取目标群。",
+    "index.text_58bdb85875": "公告 {noticeId} · {selected} 条已确认发送的消息",
+    "index.text_597375fb3e": "公告 {noticeId} 没有可撤回的已确认消息。",
+    "index.text_5c14524d87": "用法：#公告推送回执 [编号] [页码]",
+    "index.text_62acebdbf8": "未确认送达的群：{value1}",
+    "index.text_692c05335e": "撤回未发出",
+    "index.text_6ce2f988ae": "按账号确认送达：",
+    "index.text_6d8a248e15": "#公告账号白名单/黑名单 [机器人QQ] 添加/删除/查看",
+    "index.text_6d90a892e8": "公告推送未完成，请查看投递回执。",
+    "index.text_6e6a706ba5": "公告 {noticeId} · {selected} 个目标群",
+    "index.text_7388115620": "撤回已确认 {value1} · 撤回未发出 {value2} · 撤回未确认 {value3}",
+    "index.text_79101fc7af": "推送进度 {processed}/{selected} · 确认送达 {confirmed}。",
+    "index.text_7a8acdb7bb": "没有历史公告。",
+    "index.text_7ca7f03d80": "状态 {status}",
+    "index.text_860106d549": "无法确认发布者身份。",
+    "index.text_87a9692b7d": "公告已发布，编号 {id}。",
+    "index.text_89c69f5bc2": "#公告推送回执 [编号] [页码]",
+    "index.text_8c370436a4": "公告 {id} 开始推送，共 {accounts} 个账号、{selected} 个目标群。",
+    "index.text_9579dede53": "公告存储未连接。",
+    "index.text_965eedbd5b": "当前公告已撤回。",
+    "index.text_969d375f07": "[notice] 无法读取米游社公告推送配置。",
+    "index.text_97e92a3f7d": "确认送达 {value1} · 未发出 {value2} · 结果未确认 {value3}",
+    "index.text_97f0546627": "公告存储操作失败，请稍后再试。",
+    "index.text_983b7608a1": "已跳过 {alreadyClaimed} 个已有投递记录的群。",
+    "index.text_a24a822bfe": "公告 {noticeId} 的回执共有 {pages} 页。",
+    "index.text_a294d065ef": "时间: {timestamp}",
+    "index.text_ae926150f0": "公告已更新。",
+    "index.text_b46f585cfc": "当前公告",
+    "index.text_b61f333b91": "发布",
+    "index.text_bd11e940e8": "推送已中断。",
+    "index.text_be2e7e55bb": "当前没有可编辑的公告。",
+    "index.text_be37624ff9": "#全部历史公告 [页码] 合并转发全文，每页十条",
+    "index.text_bee7c78b04": "历史公告共有 {pages} 页，每页十条。",
+    "index.text_c16a288d52": "撤回已中断。",
+    "index.text_c6b5b4ce3d": "#公告 查看当前公告",
+    "index.text_c9c98bd5cf": "#发布公告 <内容>",
+    "index.text_ccc793f94b": "正在推送公告，请稍候。",
+    "index.text_d5656aa9ea": "用法：#推送公告",
+    "index.text_db1472dce7": "撤回记录写入未确认，已停止后续撤回。",
+    "index.text_dd7831b4a6": "发出结果未确认",
+    "index.text_e69631bde8": "公告{verb}结果未确认，请先发送 #公告 核对。",
+    "index.text_ea4a50ce05": "撤回结果未确认",
+    "index.text_ea8dd79188": "机器人 {botId} · {value2}/{total}",
+    "index.text_ed2f75835d": "#公告账号配置 [机器人QQ 启用/禁用/间隔/重试 值]",
+    "index.text_ed47a8fe50": "上一条历史公告",
+    "index.text_f3e5dfeaee": "当前没有公告。",
+    "index.text_f4505d0f9f": "公告{verb}失败。",
+    "index.text_faf15e2777": "无法读取公告推送回执。",
+    "index.text_fc8f225fd5": "撤回等待确认或进程中断",
+    "mys-activity-source.text_b8eabededa": "活动公告接口不可用。",
+    "mys-activity-source.text_c7312bc51e": "活动公告响应无效。",
+    "mys-activity.text_189e615869": "旧活动队列无效",
+    "mys-activity.text_3fd47edce4": "关闭",
+    "mys-activity.text_447cc117f7": "[notice] 无法读取{value1}活动结束时间。",
+    "mys-activity.text_750034ad8a": "【{value1}活动即将结束通知】\n活动 {subtitle}",
+    "mys-activity.text_75d5781e08": "预警",
+    "mys-activity.text_7b176cfaf3": "[notice] 无法读取活动到期推送目标。",
+    "mys-activity.text_8c8773a26b": "用法 {prefix}推送",
+    "mys-activity.text_8da97ddda9": "开启",
+    "mys-activity.text_9579dede53": "公告存储未连接。",
+    "mys-activity.text_a2927891f0": "星铁",
+    "mys-activity.text_ae2bd2f2c0": "无法确认当前机器人和群聊。",
+    "mys-activity.text_b193168ee7": "{value1}活动到期推送已{label}。",
+    "mys-activity.text_c4b1d6d798": "[notice] 活动到期队列或群列表不可用。",
+    "mys-activity.text_c5ff14e7be": "[notice] 活动到期推送定时配置无效。",
+    "mys-activity.text_c62ae5831c": "旧活动队列含无效群号",
+    "mys-activity.text_c757c9cc2d": "推送",
+    "mys-activity.text_caa83a5821": "\n描述 {title}\n活动剩余时间 {days}天{hours}小时{minutes}分钟{value5}秒\n活动结束时间 {value6}",
+    "mys-activity.text_d1597c51ed": "原神",
+    "mys-activity.text_d8b6e222d2": "只有群管理员或机器人主人可以设置到期活动推送。",
+    "mys-activity.text_df10a97a31": "无法保存活动推送设置，请稍后重试。",
+    "mys-activity.text_e03f3b9e17": "[notice] 无法读取{value1}活动到期推送目标。",
+    "mys-activity.text_f03714ff7b": "活动到期推送请在群聊中设置。",
+    "mys-activity.text_f746555b58": "[notice] 活动到期推送未完成。",
+    "mys-activity.text_ff0954485e": "预警推送",
+    "mys-announcement-config.text_0cbb0c83be": "大别野|已开奖",
+    "mys-announcement-config.text_24feea59e9": "预下载|脚本外挂|集中反馈|已开奖|问题说明|意见反馈|账号封禁|工具|直播预告|获奖名单|大别野",
+    "mys-announcement-config.text_33fdfe8eac": "冒险助力礼包|纪行|预下载|脚本外挂|集中反馈|已开奖|云·原神|魔神任务|传说任务|线下赛|晋级赛|战绩更新|海选赛|邀请赛|积分赛|战绩工具|交流平台|首日赛|线上赛|社区内容|个人专访|全民赛|决赛|总决赛|半决赛|淘汰赛|作品展示|同人|大别野",
+    "mys-announcement-config.text_367402e74f": "米游社推送配置须为 YAML 映射。",
+    "mys-announcement-config.text_47bc57916c": "米游社推送定时或条数配置无效。",
+    "mys-announcement-config.text_5a55715852": "米游社推送目标格式无效。",
+    "mys-announcement-config.text_5d53a57803": "[notice] 无法读取 {value1}活动到期推送目标。",
+    "mys-announcement-config.text_7e65230203": "已开奖|大别野",
+    "mys-announcement-config.text_806ef05927": "封禁名单|大别野|马克兔速报|预下载",
+    "mys-announcement-config.text_a2927891f0": "星铁",
+    "mys-announcement-config.text_d1597c51ed": "原神",
+    "mys-announcement-config.text_e97f29d854": "作品展示|已开奖|大别野",
+    "mys-announcement-config.text_f5b8efe05f": "米游社推送群号无效。",
+    "mys-announcement-source.text_069c0ecbf8": "公告",
+    "mys-announcement-source.text_212716b252": "米游社公告接口返回无效。",
+    "mys-announcement-source.text_4b20dcc35a": "未定",
+    "mys-announcement-source.text_6d3d8653d7": "崩坏3",
+    "mys-announcement-source.text_71d9a93075": "资讯",
+    "mys-announcement-source.text_7b370b8094": "崩坏二",
+    "mys-announcement-source.text_9e9bead814": "活动",
+    "mys-announcement-source.text_a2927891f0": "星铁",
+    "mys-announcement-source.text_a6e4fbed57": "未定事件簿",
+    "mys-announcement-source.text_a84dd5bd1b": "崩二",
+    "mys-announcement-source.text_b1110352c9": "绝区零",
+    "mys-announcement-source.text_b89bc676bd": "崩坏学园二",
+    "mys-announcement-source.text_d1597c51ed": "原神",
+    "mys-announcement-source.text_df43f0569d": "崩三",
+    "mys-announcement-source.text_e23acb528a": "米游社公告接口不可用。",
+    "mys-announcement-source.text_e3173a70bd": "崩坏三",
+    "mys-announcement-source.text_e5b1fba52e": "崩坏学园2",
+    "mys-announcement-source.text_e73e38c1f6": "官方",
+    "mys-announcement.text_03670a06f8": "用法 #{name}{label} [1-20]",
+    "mys-announcement.text_079f1aa96c": "米游社全部",
+    "mys-announcement.text_134d89ae1f": "米游社公告推送 cron 无效。",
+    "mys-announcement.text_14111e3a0d": "[notice] 米游社公告推送 cron 无效。",
+    "mys-announcement.text_1abf8a7618": "[notice] 米游社公告推送失败。",
+    "mys-announcement.text_247ba41fa0": "已确认 {confirmed} 条，未发出 {rejected} 条，结果未确认 {unknown} 条，已去重 {skipped} 条，异常 {failed} 次。",
+    "mys-announcement.text_25d3a2a2ba": "仅有 {length} 条搜索结果。请输入第1到第{value2}条。",
+    "mys-announcement.text_2f0664f20c": "用法 #{name}{action}{label}推送",
+    "mys-announcement.text_2f1366c8c5": "部分原图暂不可用，可通过链接查看完整原文。",
+    "mys-announcement.text_3ab11af5c4": "米游社公告和资讯\n{summary}",
+    "mys-announcement.text_3f71e29e87": "推送请在群聊中设置。",
+    "mys-announcement.text_3fd47edce4": "关闭",
+    "mys-announcement.text_48d1700d89": "只有群管理员或机器人主人可以设置{label}推送。",
+    "mys-announcement.text_5100350548": "星铁星琼预估",
+    "mys-announcement.text_6990de13a3": "{action}{label}推送",
+    "mys-announcement.text_69effc2871": "请直接发送 {command}。",
+    "mys-announcement.text_6c7444e966": "米游社搜索暂不可用。",
+    "mys-announcement.text_7f0f5d6847": "仅有 {length} 条{name}{label}，请输入 1-{value4}。",
+    "mys-announcement.text_8da97ddda9": "开启",
+    "mys-announcement.text_9579dede53": "公告存储未连接。",
+    "mys-announcement.text_9b9101dcd6": "无法保存{label}推送设置，请稍后重试。",
+    "mys-announcement.text_ae2bd2f2c0": "无法确认当前机器人和群聊。",
+    "mys-announcement.text_b09ca90f8f": "米游社资源预估暂不可用。",
+    "mys-announcement.text_b33d6a8d75": "用法 #{name}{label}列表",
+    "mys-announcement.text_b655331797": "米游社{label}暂不可用。",
+    "mys-announcement.text_be4486aad5": "{name}{label}推送已{action}。",
+    "mys-announcement.text_c1d233aaef": "{name}{action}{label}推送",
+    "mys-announcement.text_c6fe4f2b60": "仅机器人主人可触发{label}推送。",
+    "mys-announcement.text_c71389ad81": "没有搜到米游社文章，请换个关键词。",
+    "mys-announcement.text_c757c9cc2d": "推送",
+    "mys-announcement.text_cc1c3b535e": "米游社文章暂无法展开。",
+    "mys-announcement.text_d1c882d00d": "[notice] 米游社公告推送配置无效，本轮暂停投递。",
+    "mys-announcement.text_d21d2863c5": "暂无{name}{label}。",
+    "mys-announcement.text_db2b052b10": "{alternative}{action}{label}推送",
+    "mys-announcement.text_e20a1fa7a4": "{name}{label}列表",
+    "mys-announcement.text_eea71bdc52": "{label}推送正在处理或已停止。",
+    "mys-announcement.text_ef3763ae26": "暂无数据。",
+    "mys-announcement.text_f40e1d7191": "用法 {command}",
+    "mys-article-card.text_04672a3887": "正文续页 · 第 {value1} 页",
+    "mys-article-card.text_0882606c89": "来自版块：",
+    "mys-article-card.text_1d87d47e95": "[图片] {alt}",
+    "mys-article-card.text_21a0488201": "文章发表：{value1}",
+    "mys-article-card.text_2c892064bb": "[图片暂不可用]",
+    "mys-article-card.text_664e075976": "米游社文章分页超限，请打开原文查看。",
+    "mys-article-card.text_6849b8254d": "评论",
+    "mys-article-card.text_8236698f91": "米游社文章过长，请打开原文查看。",
+    "mys-article-card.text_a8c81f93f2": "浏览",
+    "mys-article-card.text_aced5d7f9f": "点赞",
+    "mys-article-card.text_b2e8dfa288": "{value1}万",
+    "mys-article-card.text_d275e22dc8": "米游社文章图片过大，请打开原文查看。",
+    "mys-emoticon-source.text_728b033fab": "米游社表情清单超出大小限制。",
+    "mys-emoticon-source.text_7431368a24": "米游社表情清单不可用。",
+    "mys-emoticon-source.text_d0e43a0917": "米游社表情清单无效。",
+    "mys-list-card.text_017825b859": "详情内容使用 {command} 加上序号查看，如 {value2}2",
+    "mys-list-card.text_0f57cd62dd": "米游社·{name}{value2}列表",
+    "mys-list-card.text_8b0c294909": "崩坏星穹铁道",
+    "mys-public-query.text_50820e368f": "请输入关键词，如 #米游社 七七。可追加「第2条」选择搜索结果。",
+    "mys-public-request.text_37b030a189": "米游社公开接口不可用。",
+    "mys-search-source.text_09b0350e68": "星琼统计汇总",
+    "mys-search-source.text_4df06196b4": "水晶统计",
+    "mys-search-source.text_b649504d4e": "菲林统计汇总",
+    "mys-search-source.text_ca09c7b48c": "米游社搜索接口不可用。",
+    "mys-search-source.text_eaeb1e9610": "米游社资源预估接口返回无效。",
+    "mys-search-source.text_f5403ae1fa": "原石统计汇总",
+    "mys-search-source.text_fd2d0884c4": "米游社资源预估接口不可用。",
+    "schedule.text_0d417f1d3a": "scheduleTime 格式须为 HH:mm-HH:mm",
+    "schedule.text_303afbe194": "定时公告 {noticeId} 开始推送。",
+    "schedule.text_3782c14324": "定时公告 {noticeId} · 确认送达 {confirmed} · 目标 {selected} · 跳过 {alreadyClaimed}。",
+    "schedule.text_55b78ceb8a": "enableSchedule 须为布尔值",
+    "schedule.text_7e5a6d7f20": "两处旧公告日志级别不一致，请在 config/notice.yaml 指定使用的级别",
+    "schedule.text_a25c6b407b": "两处旧公告定时配置不一致，请在 config/notice.yaml 指定使用的窗口",
+    "schedule.text_a417ac2338": "公告定时窗口无效",
+    "schedule.text_c548323c28": "公告定时配置须为 YAML 映射",
+    "schedule.text_e0583bdb59": "定时公告执行未完成。",
+    "schedule.text_e3ad87f7b8": "\nif redis.call('EXISTS', KEYS[1]) == 1 then return 0 end\nif ARGV[1] == '' or redis.call('GET', KEYS[2]) ~= ARGV[1] or\n  redis.call('HGET', KEYS[3], 'content') ~= ARGV[2] or\n  (redis.call('HGET', KEYS[3], 'segments') or '') ~= ARGV[4] or\n  redis.call('HGET', KEYS[3], 'status') ~= '当前' or\n  redis.call('HGET', KEYS[3], 'push') ~= '未推送' then\n  redis.call('SET', KEYS[1], '{\"state\":\"skipped\"}', 'EX', 3024000)\n  return -1\nend\nredis.call('SET', KEYS[1], ARGV[3], 'EX', 3024000)\nreturn 1\n",
+    "store.text_0462a8aa70": "已撤回",
+    "store.text_3d8bc758d0": "\nlocal function expect_type(key, kind)\n  local actual = redis.call('TYPE', key).ok\n  return actual == 'none' or actual == kind\nend\n\nlocal op, prefix, new_id, content, creator, timestamp, now, segments = unpack(ARGV)\nif not expect_type(KEYS[1], 'string') or not expect_type(KEYS[2], 'list') then\n  return 'rejected'\nend\n\nlocal current = redis.call('GET', KEYS[1])\nif current and not string.match(current, '^%d%d%d%d%d[A-Z][A-Z][A-Z]$') then\n  return 'rejected'\nend\nlocal old = current and prefix .. current\nif old and not expect_type(old, 'hash') then\n  return 'rejected'\nend\nlocal status = old and redis.call('HGET', old, 'status')\nlocal alive = old and status ~= '已撤回' and status ~= 'recalled' and\n  redis.call('HEXISTS', old, 'content') == 1 and\n  redis.call('HEXISTS', old, 'timestamp') == 1 and\n  redis.call('HEXISTS', old, 'creator') == 1\n\nlocal function archive(state)\n  redis.call('HSET', old, 'status', state)\n  redis.call('LREM', KEYS[2], 0, current)\n  redis.call('LPUSH', KEYS[2], current)\n  redis.call('LTRIM', KEYS[2], 0, 49)\nend\n\nif op == 'publish' then\n  local target = prefix .. new_id\n  if new_id == current or redis.call('EXISTS', target) == 1 or redis.call('LPOS', KEYS[2], new_id) then\n    return 'collision'\n  end\n  if alive then archive('已归档') end\n  redis.call('HSET', target, 'content', content, 'creator', creator,\n    'timestamp', timestamp, 'status', '当前', 'push', '未推送', 'created', now)\n  if segments ~= '' then redis.call('HSET', target, 'segments', segments) end\n  redis.call('EXPIRE', target, 2592000)\n  redis.call('SET', KEYS[1], new_id)\n  return {new_id, creator, timestamp, '当前'}\nend\n\nif not alive then return false end\nif op == 'edit' then\n  local metadata = redis.call('HMGET', old, 'creator', 'timestamp')\n  redis.call('HSET', old, 'content', content)\n  if segments == '' then redis.call('HDEL', old, 'segments')\n  else redis.call('HSET', old, 'segments', segments) end\n  return {current, metadata[1], metadata[2], status or ''}\nelseif op == 'recall' then\n  archive('已撤回')\n  redis.call('DEL', KEYS[1])\nend\nreturn current\n",
+    "store.text_87695daea3": "公告存储键无效",
+    "target-commands.text_0cd46e0310": "仅机器人主人可管理公告目标群。",
+    "target-commands.text_15d1928903": "白名单 {length} · 黑名单 {value2}",
+    "target-commands.text_174ec5a4ab": "黑名单",
+    "target-commands.text_19095cd9f3": "用法 #公告账号{action}",
+    "target-commands.text_1f673f53fe": "请明确填写目标群号。",
+    "target-commands.text_23bb57de0f": "公告账号操作失败，请检查存储与账号配置。",
+    "target-commands.text_27e2d9e2d9": "白名单",
+    "target-commands.text_40c70ab82a": "{title}（{page}/{pages} 页，共 {length} 个群）\n{value5}",
+    "target-commands.text_41ae31f021": "请指定操作：添加、删除或查看。",
+    "target-commands.text_4eda866eb1": "推送间隔须为 500 至 10000 毫秒。",
+    "target-commands.text_4f7084b2e7": "已{action} {changed}/{length} 个在线账号的公告推送。",
+    "target-commands.text_55c65780b8": "{title}当前为空。",
+    "target-commands.text_5cab27540e": "{title}共有 {pages} 页。",
+    "target-commands.text_5d193810f3": "{saved}重试次数保留供旧配置读取，推送由逐群回执决定。",
+    "target-commands.text_5d710ee899": "重试 {value1}（旧配置）",
+    "target-commands.text_5fbe79c153": "请输入账号 QQ，或通过已连接的机器人发送指令。",
+    "target-commands.text_6ce3d07fc5": "全局白名单 {length} · 全局黑名单 {value2}",
+    "target-commands.text_6f945a35e6": "公告账号{action} · {length} 个在线账号",
+    "target-commands.text_71b2703fe8": "公告账号 {account} 的配置已保存。",
+    "target-commands.text_72a56e2569": "群列表不可用",
+    "target-commands.text_7b0380bcab": "请填写 true/false 或 是/否。",
+    "target-commands.text_7b7ff0558a": "重试次数须为 0 至 10。",
+    "target-commands.text_7df5c456c7": "禁用",
+    "target-commands.text_860101a471": "当前在线账号没有可核实的群。",
+    "target-commands.text_915de97163": "仅机器人主人可管理公告账号。",
+    "target-commands.text_932fbd78e8": "请填写有效群号，用空格或逗号分开。",
+    "target-commands.text_93cd7d8402": "请提供有效页码。",
+    "target-commands.text_9579dede53": "公告存储未连接。",
+    "target-commands.text_99daac5d8c": "{failures} 个账号的群数未计入。",
+    "target-commands.text_9a53ab89f7": "{title}已{action} {affected} 个群。",
+    "target-commands.text_9a995fe04d": "间隔 {value1} 毫秒",
+    "target-commands.text_9b199b04a8": "用法 #公告账号配置 QQ 启用/禁用/间隔/重试 值",
+    "target-commands.text_a0ea4a353a": "当前没有登录的公告账号。",
+    "target-commands.text_a339af3054": "公告目标群操作失败，请检查存储与名单格式。",
+    "target-commands.text_b0149e6b27": "{length} 个群",
+    "target-commands.text_b1144c60f3": "启用 {enabled} · 群数 {memberships} · 可推送 {available}",
+    "target-commands.text_c30c5a839c": "配置项可选启用、禁用、间隔或重试。",
+    "target-commands.text_d4363e1d93": "{title}已{action} {affected} 个在线账号所在的群。",
+    "target-commands.text_d87997a2cf": "可推送 {pushable} 个群",
+    "target-commands.text_dfe9ccba64": "每次最多操作 200 个群号。",
+    "target-commands.text_e2ee5c6801": "指定的公告账号未连接。",
+    "target-commands.text_f4f0ead111": "启用",
+    "targets.text_0f25118ca7": "无法读取公告目标群配置",
+    "targets.text_24ed3d8912": "公告名单格式无效",
+    "targets.text_515323d2be": "无效的公告账号",
+    "targets.text_56dfb63a10": "公告名单写入失败",
+    "targets.text_79babe351e": "公告账号启用状态无效",
+    "targets.text_b12fa04f9e": "公告名单含无效群号",
+    "targets.text_d205456a89": "公告账号配置写入失败",
+    "targets.text_e915a0c8f4": "公告账号名单格式无效"
+  },
+  "parameters": {
+    "content.text_52b72bd39c": {
+      "maxTextCharacters": "maxTextCharacters"
+    },
+    "index.text_7ca7f03d80": {
+      "status": "item.status"
+    },
+    "index.text_3ae64658f7": {
+      "creator": "item.creator"
+    },
+    "index.text_2b70c269ae": {
+      "status": "item.status"
+    },
+    "index.text_55a1d9bcb5": {
+      "creator": "item.creator"
+    },
+    "index.text_a294d065ef": {
+      "timestamp": "item.timestamp"
+    },
+    "index.text_f4505d0f9f": {
+      "verb": "verb"
+    },
+    "index.text_e69631bde8": {
+      "verb": "verb"
+    },
+    "index.text_87a9692b7d": {
+      "id": "notice.id"
+    },
+    "index.text_bee7c78b04": {
+      "pages": "pages"
+    },
+    "index.text_8c370436a4": {
+      "id": "id",
+      "accounts": "accounts",
+      "selected": "selected"
+    },
+    "index.text_79101fc7af": {
+      "processed": "processed",
+      "selected": "selected",
+      "confirmed": "confirmed"
+    },
+    "index.text_6e6a706ba5": {
+      "noticeId": "result.noticeId",
+      "selected": "result.selected"
+    },
+    "index.text_97e92a3f7d": {
+      "value1": "count(\"confirmed\")",
+      "value2": "count(\"not-sent\")",
+      "value3": "count(\"unknown\")"
+    },
+    "index.text_ea8dd79188": {
+      "botId": "botId",
+      "value2": "confirmedByAccount.get(botId) ?? 0",
+      "total": "total"
+    },
+    "index.text_62acebdbf8": {
+      "value1": "failed.slice(0, failedGroupLimit).join(\"、\")"
+    },
+    "index.text_4f6d3657e7": {
+      "value1": "failed.length - failedGroupLimit"
+    },
+    "index.text_983b7608a1": {
+      "alreadyClaimed": "result.alreadyClaimed"
+    },
+    "index.text_57f56b207c": {
+      "discoveryFailures": "result.discoveryFailures"
+    },
+    "index.text_1fd24f13e1": {
+      "noticeId": "result.noticeId"
+    },
+    "index.text_597375fb3e": {
+      "noticeId": "result.noticeId"
+    },
+    "index.text_58bdb85875": {
+      "noticeId": "result.noticeId",
+      "selected": "result.selected"
+    },
+    "index.text_7388115620": {
+      "value1": "count(\"confirmed\")",
+      "value2": "count(\"not-sent\")",
+      "value3": "count(\"unknown\")"
+    },
+    "index.text_56e6e2ef8f": {
+      "alreadyClaimed": "result.alreadyClaimed"
+    },
+    "index.text_09ecd4d4f3": {
+      "noticeId": "result.noticeId"
+    },
+    "index.text_a24a822bfe": {
+      "noticeId": "result.noticeId",
+      "pages": "pages"
+    },
+    "index.text_0878dc62cb": {
+      "groupId": "receipt.groupId",
+      "botId": "receipt.botId",
+      "value3": "describeReceipt(receipt)"
+    },
+    "index.text_2e42d76eee": {
+      "noticeId": "result.noticeId",
+      "page": "page",
+      "pages": "pages"
+    },
+    "index.text_008627ff5f": {
+      "messageId": "receipt.messageId"
+    },
+    "mys-activity.text_750034ad8a": {
+      "value1": "names[game]",
+      "subtitle": "event.subtitle"
+    },
+    "mys-activity.text_caa83a5821": {
+      "title": "event.title",
+      "days": "days",
+      "hours": "hours",
+      "minutes": "minutes",
+      "value5": "remaining%60",
+      "value6": "chinaTime(event.end)"
+    },
+    "mys-activity.text_e03f3b9e17": {
+      "value1": "names[game]"
+    },
+    "mys-activity.text_447cc117f7": {
+      "value1": "names[game]"
+    },
+    "mys-activity.text_8c8773a26b": {
+      "prefix": "prefix"
+    },
+    "mys-activity.text_b193168ee7": {
+      "value1": "names[game]",
+      "label": "label"
+    },
+    "mys-announcement-config.text_5d53a57803": {
+      "value1": "game === \"gs\" ? \"原神\" : \"星铁\""
+    },
+    "mys-announcement.text_f40e1d7191": {
+      "command": "command"
+    },
+    "mys-announcement.text_69effc2871": {
+      "command": "command"
+    },
+    "mys-announcement.text_c6fe4f2b60": {
+      "label": "label"
+    },
+    "mys-announcement.text_eea71bdc52": {
+      "label": "label"
+    },
+    "mys-announcement.text_247ba41fa0": {
+      "confirmed": "report.confirmed",
+      "rejected": "report.rejected",
+      "unknown": "report.unknown",
+      "skipped": "report.skipped",
+      "failed": "report.failed"
+    },
+    "mys-announcement.text_3ab11af5c4": {
+      "summary": "summary"
+    },
+    "mys-announcement.text_03670a06f8": {
+      "name": "name",
+      "label": "label"
+    },
+    "mys-announcement.text_d21d2863c5": {
+      "name": "name",
+      "label": "label"
+    },
+    "mys-announcement.text_7f0f5d6847": {
+      "length": "posts.length",
+      "name": "name",
+      "label": "label",
+      "value4": "posts.length"
+    },
+    "mys-announcement.text_b655331797": {
+      "label": "label"
+    },
+    "mys-announcement.text_b33d6a8d75": {
+      "name": "name",
+      "label": "label"
+    },
+    "mys-announcement.text_e20a1fa7a4": {
+      "name": "name",
+      "label": "label"
+    },
+    "mys-announcement.text_25d3a2a2ba": {
+      "length": "posts.length",
+      "value2": "posts.length"
+    },
+    "mys-announcement.text_2f0664f20c": {
+      "name": "name",
+      "action": "action",
+      "label": "label"
+    },
+    "mys-announcement.text_48d1700d89": {
+      "label": "label"
+    },
+    "mys-announcement.text_be4486aad5": {
+      "name": "name",
+      "label": "label",
+      "action": "action"
+    },
+    "mys-announcement.text_9b9101dcd6": {
+      "label": "label"
+    },
+    "mys-announcement.text_c1d233aaef": {
+      "name": "name",
+      "action": "action",
+      "label": "label"
+    },
+    "mys-announcement.text_db2b052b10": {
+      "alternative": "alternative",
+      "action": "action",
+      "label": "label"
+    },
+    "mys-announcement.text_6990de13a3": {
+      "action": "action",
+      "label": "label"
+    },
+    "mys-article-card.text_b2e8dfa288": {
+      "value1": "(value / 10_000).toFixed(2)"
+    },
+    "mys-article-card.text_21a0488201": {
+      "value1": "dateFormat.format(article.created * 1000)"
+    },
+    "mys-article-card.text_1d87d47e95": {
+      "alt": "block.alt"
+    },
+    "mys-article-card.text_04672a3887": {
+      "value1": "pages.length + 1"
+    },
+    "mys-list-card.text_0f57cd62dd": {
+      "name": "name",
+      "value2": "announcementLabels[kind]"
+    },
+    "mys-list-card.text_017825b859": {
+      "command": "command",
+      "value2": "command"
+    },
+    "schedule.text_303afbe194": {
+      "noticeId": "noticeId"
+    },
+    "schedule.text_3782c14324": {
+      "noticeId": "noticeId",
+      "confirmed": "confirmed",
+      "selected": "result.selected",
+      "alreadyClaimed": "result.alreadyClaimed"
+    },
+    "target-commands.text_19095cd9f3": {
+      "action": "action"
+    },
+    "target-commands.text_4f7084b2e7": {
+      "action": "action",
+      "changed": "changed",
+      "length": "ids.length"
+    },
+    "target-commands.text_71b2703fe8": {
+      "account": "account"
+    },
+    "target-commands.text_5d193810f3": {
+      "saved": "saved"
+    },
+    "target-commands.text_b0149e6b27": {
+      "length": "groups.length"
+    },
+    "target-commands.text_d87997a2cf": {
+      "pushable": "pushable"
+    },
+    "target-commands.text_9a995fe04d": {
+      "value1": "config.pushInterval ?? 2000"
+    },
+    "target-commands.text_5d710ee899": {
+      "value1": "config.retryCount ?? 3"
+    },
+    "target-commands.text_15d1928903": {
+      "length": "config.whitelist.length",
+      "value2": "config.blacklist.length"
+    },
+    "target-commands.text_6f945a35e6": {
+      "action": "action",
+      "length": "ids.length"
+    },
+    "target-commands.text_6ce3d07fc5": {
+      "length": "global.whitelist.length",
+      "value2": "global.blacklist.length"
+    },
+    "target-commands.text_b1144c60f3": {
+      "enabled": "enabled",
+      "memberships": "memberships",
+      "available": "available"
+    },
+    "target-commands.text_99daac5d8c": {
+      "failures": "failures"
+    },
+    "target-commands.text_55c65780b8": {
+      "title": "title"
+    },
+    "target-commands.text_5cab27540e": {
+      "title": "title",
+      "pages": "pages"
+    },
+    "target-commands.text_40c70ab82a": {
+      "title": "title",
+      "page": "page",
+      "pages": "pages",
+      "length": "ids.length",
+      "value5": "ids.slice((page - 1) * groupsPerPage, page * groupsPerPage).join(\"、\")"
+    },
+    "target-commands.text_d4363e1d93": {
+      "title": "title",
+      "action": "action",
+      "affected": "affected"
+    },
+    "target-commands.text_9a53ab89f7": {
+      "title": "title",
+      "action": "action",
+      "affected": "affected"
+    }
+  }
+}

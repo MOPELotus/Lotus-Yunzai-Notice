@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { announcementGames, postImage, readAnnouncementFeed } from "./mys-announcement-source.ts";
 import { readPublicMys, type PublicMysTransport } from "./mys-public-request.ts";
 
@@ -12,7 +15,7 @@ export function createMysSearchSource(transport: PublicMysTransport = fetch) {
     }, transport, async (response) => {
       if (!response.ok) {
         void response.body?.cancel().catch(() => undefined);
-        throw new Error("米游社搜索接口不可用。");
+        throw new Error($t("mys-search-source.text_ca09c7b48c"));
       }
       const result = await response.json() as { retcode?: unknown; data?: { posts?: unknown } } | null;
       return readAnnouncementFeed({ retcode: result?.retcode, data: { list: result?.data?.posts } }, 20, true);
@@ -21,10 +24,10 @@ export function createMysSearchSource(transport: PublicMysTransport = fetch) {
 }
 
 const estimates = {
-  gs: { keyword: "原石统计汇总", author: "137101761" },
-  sr: { keyword: "星琼统计汇总", author: "137101761" },
-  zzz: { keyword: "菲林统计汇总", author: "137101761" },
-  bbb: { keyword: "水晶统计", author: "80216695" },
+  gs: { keyword: $t("mys-search-source.text_f5403ae1fa"), author: "137101761" },
+  sr: { keyword: $t("mys-search-source.text_09b0350e68"), author: "137101761" },
+  zzz: { keyword: $t("mys-search-source.text_b649504d4e"), author: "137101761" },
+  bbb: { keyword: $t("mys-search-source.text_4df06196b4"), author: "80216695" },
 } as const;
 export type EstimateGame = keyof typeof estimates;
 
@@ -46,11 +49,11 @@ export function createMysEstimateSource(transport: PublicMysTransport = fetch) {
     }, transport, async (response) => {
       if (!response.ok) {
         void response.body?.cancel().catch(() => undefined);
-        throw new Error("米游社资源预估接口不可用。");
+        throw new Error($t("mys-search-source.text_fd2d0884c4"));
       }
       const result = record(await response.json());
       const rows = record(result.data).list;
-      if (result.retcode !== 0 || !Array.isArray(rows)) throw new Error("米游社资源预估接口返回无效。");
+      if (result.retcode !== 0 || !Array.isArray(rows)) throw new Error($t("mys-search-source.text_eaeb1e9610"));
       const list = rows.slice(0, 20).map(row => record(record(row).post)).filter(entry => {
         const post = record(entry.post);
         return post.uid === author && post.game_id === announcementGames[game].id;

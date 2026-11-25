@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { setTimeout as wait } from "node:timers/promises";
 import { decorateNotice, type NoticeSegment } from "./content.ts";
 import { createNoticeStore, type Notice, type NoticeRedis } from "./store.ts";
@@ -82,33 +85,9 @@ export function noticeAdapter(account: NoticeAccount): { adapter?: "milky" } {
   return account.adapter === "milky" ? { adapter: "milky" } : {};
 }
 
-const claimGroup = `
-local previous = redis.call('HGET', KEYS[1], ARGV[1])
-if previous and cjson.decode(previous).state ~= 'not-sent' then return 0 end
-if redis.call('GET', KEYS[2]) ~= ARGV[2] or redis.call('HGET', KEYS[3], 'content') ~= ARGV[3] or
-  (redis.call('HGET', KEYS[3], 'segments') or '') ~= ARGV[5] then
-  return -1
-end
-local status = redis.call('HGET', KEYS[3], 'status')
-if status == '已撤回' or status == 'recalled' then return -1 end
-redis.call('HSET', KEYS[1], ARGV[1], ARGV[4])
-local ttl = redis.call('PTTL', KEYS[3])
-if ttl >= 0 then
-  redis.call('PEXPIRE', KEYS[1], ttl + 2592000000)
-else
-  redis.call('PERSIST', KEYS[1])
-end
-return 1
-`;
+const claimGroup = $t("delivery.text_c483ca126d");
 
-const finishGroup = `
-if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then return 0 end
-redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
-if ARGV[4] == 'confirmed' and redis.call('TYPE', KEYS[2]).ok == 'hash' then
-  redis.call('HSET', KEYS[2], 'push', '已推送')
-end
-return 1
-`;
+const finishGroup = $t("delivery.text_d803cb90b6");
 
 const replaceReceipt = `
 if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then return 0 end
@@ -143,17 +122,17 @@ function readReceipt(group: string, raw: string): DeliveryReceipt {
     if (state === "confirmed" && typeof messageId === "number" && Number.isSafeInteger(messageId) && (adapter !== "milky" || messageId >= 0)) {
       if (recall === undefined) return { ...destination, state, messageId };
       if (recallState(recall)) return { ...destination, state, messageId, recall };
-      throw new Error("公告撤回回执格式无效");
+      throw new Error($t("delivery.text_4ab1381a03"));
     }
     if (state === "pending" || state === "not-sent" || state === "unknown") {
       return { ...destination, state };
     }
   }
-  throw new Error("公告投递回执格式无效");
+  throw new Error($t("delivery.text_46a2dcf3e2"));
 }
 
 async function send(account: NoticeAccount, notice: Notice, target: Destination, signal?: AbortSignal): Promise<DeliveryReceipt> {
-  const content = decorateNotice(notice.content, notice.segments, "【公告通知】\n", `\n${notice.timestamp}`);
+  const content = decorateNotice(notice.content, notice.segments, $t("delivery.text_b4c326532c"), `\n${notice.timestamp}`);
   try {
     const messageId = await account.sendGroup(target.groupId, content, signal);
     return Number.isSafeInteger(messageId) && (account.adapter !== "milky" || messageId >= 0)
@@ -177,7 +156,7 @@ export function createNoticeDelivery(
   const targets = createTargetStore(redis);
 
   async function readEntries(noticeId: string) {
-    if (!noticeIdPattern.test(noticeId)) throw new Error("公告编号无效");
+    if (!noticeIdPattern.test(noticeId)) throw new Error($t("delivery.text_c9640f69c3"));
     const entries = await redis.hGetAll(receiptKey(noticeId));
     return Object.entries(entries).map(([group, raw]) => ({
       raw, receipt: readReceipt(group, raw),
@@ -282,7 +261,7 @@ export function createNoticeDelivery(
     async recall({ noticeId, groupId, signal }: RecallOptions = {}): Promise<RecallResult> {
       const result: RecallResult = { selected: 0, receipts: [], alreadyClaimed: 0 };
       if (signal?.aborted) return { ...result, stopped: "cancelled" };
-      if (groupId !== undefined && !id(groupId)) throw new Error("公告目标群无效");
+      if (groupId !== undefined && !id(groupId)) throw new Error($t("delivery.text_4b6ff4a59f"));
 
       const resolved = noticeId ?? (await notices.current())?.id;
       if (resolved === undefined) return result;

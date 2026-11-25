@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 // Public game announcement list shapes from TRSS Genshin 0290a17, model/mysNews.js.
 const urls = {
   gs: "https://hk4e-api.mihoyo.com/common/hk4e_cn/announcement/api/getAnnList?game=hk4e&game_biz=hk4e_cn&lang=zh-cn&bundle_id=hk4e_cn&platform=pc&region=cn_gf01&level=55&uid=100000000",
@@ -47,7 +50,7 @@ function chinaDate(value: unknown) {
 export function readUpcomingExpiry(game: ActivityGame, value: unknown, now: number): UpcomingExpiry[] {
   const result = record(value), data = record(result.data);
   const list = game === "gs" ? rows(data.list)[1]?.list : rows(rows(data.pic_list)[0]?.type_list)[0]?.list;
-  if (result.retcode !== 0 || !Array.isArray(list)) throw new Error("活动公告响应无效。");
+  if (result.retcode !== 0 || !Array.isArray(list)) throw new Error($t("mys-activity-source.text_c7312bc51e"));
   const events: UpcomingExpiry[] = [];
   for (const item of rows(list)) {
     const title = label(item.title);
@@ -69,7 +72,7 @@ export function createActivityExpirySource(transport: typeof fetch = fetch) {
     });
     if (!response.ok) {
       void response.body?.cancel().catch(() => undefined);
-      throw new Error("活动公告接口不可用。");
+      throw new Error($t("mys-activity-source.text_b8eabededa"));
     }
     return readUpcomingExpiry(game,await response.json(),now);
   };

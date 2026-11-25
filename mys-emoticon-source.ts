@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { announcementGames, postImage, type AnnouncementGame } from "./mys-announcement-source.ts";
 import { readPublicMys, type PublicMysTransport } from "./mys-public-request.ts";
 
@@ -30,7 +33,7 @@ export function* emoticonTokens(text: string) {
 async function decodeCatalogue(response: Response) {
   if (!response.ok || response.redirected || !response.body || Number(response.headers.get("Content-Length")) > catalogueLimit) {
     void response.body?.cancel().catch(() => undefined);
-    throw new Error("米游社表情清单不可用。");
+    throw new Error($t("mys-emoticon-source.text_7431368a24"));
   }
   const reader = response.body.getReader();
   const utf8 = new TextDecoder();
@@ -43,7 +46,7 @@ async function decodeCatalogue(response: Response) {
       bytes += value.byteLength;
       if (bytes > catalogueLimit) {
         await reader.cancel();
-        throw new Error("米游社表情清单超出大小限制。");
+        throw new Error($t("mys-emoticon-source.text_728b033fab"));
       }
       json += utf8.decode(value, { stream: true });
     }
@@ -52,7 +55,7 @@ async function decodeCatalogue(response: Response) {
   }
   const result = record(JSON.parse(json + utf8.decode()));
   const groups = record(result.data).list;
-  if (result.retcode !== 0 || !Array.isArray(groups)) throw new Error("米游社表情清单无效。");
+  if (result.retcode !== 0 || !Array.isArray(groups)) throw new Error($t("mys-emoticon-source.text_d0e43a0917"));
   const icons = new Map<string, string>();
   for (const entry of groups) {
     const group = record(entry);

@@ -1,3 +1,6 @@
+import { createTranslator as createTextTranslator } from "../../packages/i18n/index.ts";
+import messageCatalog from "./i18n/zh-CN.json";
+const $t = createTextTranslator("notice", messageCatalog.messages);
 import { decorateNotice, parseNoticeInput, type InboundNoticeSegment, type NoticeReply } from "./content.ts";
 import { createNoticeDelivery, type DeliveryReceipt, type NoticeDeliveryHost } from "./delivery.ts";
 import { createActivityExpiryNotices } from "./mys-activity.ts";
@@ -29,43 +32,43 @@ interface HistoryForward {
   readonly type: "forward";
   readonly nodes: readonly NoticeReply[];
   readonly batchSize: 10;
-  readonly senderName: "历史公告";
+  readonly senderName: string;
 }
 
 const historyBatchSize = 10;
 const failedGroupLimit = 10;
 const publishCommand = "#发布公告";
 const memberHelp = [
-  "#公告 查看当前公告",
-  "#历史公告 [编号] 查看历史公告",
-  "#全部历史公告 [页码] 合并转发全文，每页十条",
+  $t("index.text_c6b5b4ce3d"),
+  $t("index.text_1d929f55ba"),
+  $t("index.text_be37624ff9"),
 ].join("\n");
 const ownerHelp = [
-  "#发布公告 <内容>",
-  "#编辑公告 <内容>",
+  $t("index.text_c9c98bd5cf"),
+  $t("index.text_3782d8a59e"),
   "#撤回公告",
-  "#公告全局白名单/黑名单 添加/删除/查看",
-  "#公告账号白名单/黑名单 [机器人QQ] 添加/删除/查看",
+  $t("index.text_21213a9551"),
+  $t("index.text_6d8a248e15"),
 ].join("\n");
 const ownerDeliveryHelp = [
   "#推送公告",
-  "#公告推送回执 [编号] [页码]",
-  "#撤回已发公告 [编号] [群号]",
+  $t("index.text_89c69f5bc2"),
+  $t("index.text_30762d3660"),
   "#公告账号列表/状态/统计/启用/禁用",
-  "#公告账号配置 [机器人QQ 启用/禁用/间隔/重试 值]",
+  $t("index.text_ed2f75835d"),
 ].join("\n");
 
 function format(item: Notice, title: string, prefix = ""): NoticeReply {
   const heading = [`【${title}】 ${item.id}`, item.timestamp];
-  if (item.status) heading.push(`状态 ${item.status}`);
-  heading.push(`发布者 ${item.creator}`);
+  if (item.status) heading.push($t("index.text_7ca7f03d80", { "status": item.status }));
+  heading.push($t("index.text_3ae64658f7", { "creator": item.creator }));
   return decorateNotice(item.content, item.segments, prefix + heading.join("\n") + "\n");
 }
 
 function historyNode(item: Notice): NoticeReply {
   const heading = [`ID: ${item.id}`];
-  if (item.status) heading.push(`状态: ${item.status}`);
-  heading.push(`发布者: ${item.creator}`, `时间: ${item.timestamp}`, "----------");
+  if (item.status) heading.push($t("index.text_2b70c269ae", { "status": item.status }));
+  heading.push($t("index.text_55a1d9bcb5", { "creator": item.creator }), $t("index.text_a294d065ef", { "timestamp": item.timestamp }), "----------");
   return [
     { type: "text", text: heading.join("\n") + "\n" },
     ...(item.segments ?? [{ type: "text", text: item.content } as const]),
@@ -73,7 +76,7 @@ function historyNode(item: Notice): NoticeReply {
 }
 
 function owner(handler: Handler): Handler {
-  return (argument, context) => context?.isMaster === true ? handler(argument, context) : "仅机器人主人可管理公告。";
+  return (argument, context) => context?.isMaster === true ? handler(argument, context) : $t("index.text_2a41f2574e");
 }
 
 function hostRedis() {
@@ -95,57 +98,57 @@ export function createNoticePlugin(
 ) {
   function withStore<T extends NoticeReply | HistoryForward>(handler: (store: Store) => Promise<T>): Promise<T | string> | string {
     const redis = getRedis();
-    if (!redis) return "公告存储未连接。";
-    return handler(createNoticeStore(redis)).catch(() => "公告存储操作失败，请稍后再试。");
+    if (!redis) return $t("index.text_9579dede53");
+    return handler(createNoticeStore(redis)).catch(() => $t("index.text_97f0546627"));
   }
 
   async function writeNotice(store: Store, content: NoticeReply, context: CommandContext, creator?: string): Promise<NoticeReply> {
     const editing = creator === undefined;
-    const verb = editing ? "编辑" : "发布";
+    const verb = editing ? $t("index.text_0518365699") : $t("index.text_b61f333b91");
     const result = await store.write(content, creator);
-    if (result.state === "missing") return "当前没有可编辑的公告。";
-    if (result.state === "rejected") return `公告${verb}失败。`;
-    if (result.state !== "confirmed") return `公告${verb}结果未确认，请先发送 #公告 核对。`;
+    if (result.state === "missing") return $t("index.text_be2e7e55bb");
+    if (result.state === "rejected") return $t("index.text_f4505d0f9f", { "verb": verb });
+    if (result.state !== "confirmed") return $t("index.text_e69631bde8", { "verb": verb });
 
     const notice = result.notice;
-    const confirmation = editing ? "公告已更新。" : `公告已发布，编号 ${notice.id}。`;
+    const confirmation = editing ? $t("index.text_ae926150f0") : $t("index.text_87a9692b7d", { "id": notice.id });
     if (context.reply) {
       try {
         await context.reply(confirmation, editing);
       } catch {
         // A lost chat acknowledgement cannot undo the saved notice.
       }
-      return format(notice, "当前公告");
+      return format(notice, $t("index.text_b46f585cfc"));
     }
-    return format(notice, "当前公告", confirmation + "\n");
+    return format(notice, $t("index.text_b46f585cfc"), confirmation + "\n");
   }
 
   const commands = {
     "#公告": () => withStore(async (store) => {
       const current = await store.current();
-      return current ? format(current, "当前公告") : "当前没有公告。";
+      return current ? format(current, $t("index.text_b46f585cfc")) : $t("index.text_f3e5dfeaee");
     }),
 
     "#历史公告": (argument: string) => withStore(async (store) => {
       const history = await store.history();
-      if (!argument) return history[0] ? format(history[0], "上一条历史公告") : "没有历史公告。";
+      if (!argument) return history[0] ? format(history[0], $t("index.text_ed47a8fe50")) : $t("index.text_7a8acdb7bb");
 
       const notice = history.find(({ id }) => id === argument.toUpperCase());
-      return notice ? format(notice, "历史公告") : "没有找到对应的历史公告。";
+      return notice ? format(notice, $t("index.text_31c810e05a")) : $t("index.text_0a85ce3ac7");
     }),
 
     "#全部历史公告": (argument = "") => {
       const input = argument.trim();
       const page = input ? Number(input) : undefined;
-      if (input && (!/^[1-9]\d*$/u.test(input) || !Number.isSafeInteger(page))) return "用法 #全部历史公告 [页码]，每页十条";
+      if (input && (!/^[1-9]\d*$/u.test(input) || !Number.isSafeInteger(page))) return $t("index.text_054a4c71f9");
       return withStore(async (store) => {
         const history = await store.history();
-        if (!history.length) return "没有历史公告。";
+        if (!history.length) return $t("index.text_7a8acdb7bb");
         const pages = Math.ceil(history.length / historyBatchSize);
-        if (page !== undefined && page > pages) return `历史公告共有 ${pages} 页，每页十条。`;
+        if (page !== undefined && page > pages) return $t("index.text_bee7c78b04", { "pages": pages });
         const selected = page === undefined ? history :
           history.slice((page - 1) * historyBatchSize, page * historyBatchSize);
-        return { type: "forward", nodes: selected.map(historyNode), batchSize: historyBatchSize, senderName: "历史公告" } as const;
+        return { type: "forward", nodes: selected.map(historyNode), batchSize: historyBatchSize, senderName: $t("index.text_31c810e05a") } as const;
       });
     },
 
@@ -154,7 +157,7 @@ export function createNoticePlugin(
 
     [publishCommand]: owner((argument, context) => {
       const creator = context.user_id;
-      if (!creator || !Number.isSafeInteger(creator) || creator < 1) return "无法确认发布者身份。";
+      if (!creator || !Number.isSafeInteger(creator) || creator < 1) return $t("index.text_860106d549");
       const parsed = parseNoticeInput(publishCommand, argument, context.message, true);
       if ("error" in parsed) return parsed.error;
       return withStore((store) => writeNotice(store, parsed.content, context, String(creator)));
@@ -167,7 +170,7 @@ export function createNoticePlugin(
     }),
 
     "#撤回公告": owner(() => withStore(async (store) =>
-      await store.recall() ? "当前公告已撤回。" : "当前没有可撤回的公告。")),
+      await store.recall() ? $t("index.text_965eedbd5b") : $t("index.text_01a3c9774b"))),
   } satisfies Record<string, (argument: string, context: CommandContext) => NoticeReply | HistoryForward | Promise<NoticeReply | HistoryForward>>;
 
   const targetCommands = Object.assign(createTargetCommands(getRedis, deliveryHost), commands);
@@ -181,28 +184,28 @@ export function createNoticePlugin(
   let pushing = false;
   return { fallback, commands: Object.assign(targetCommands, {
     "#推送公告": owner(async (argument, context) => {
-      if (argument.trim()) return "用法：#推送公告";
-      if (context.isDelegated) return "请直接发送 #推送公告。";
-      if (pushing) return "正在推送公告，请稍候。";
+      if (argument.trim()) return $t("index.text_d5656aa9ea");
+      if (context.isDelegated) return $t("index.text_51b5f40228");
+      if (pushing) return $t("index.text_ccc793f94b");
       const redis = getRedis();
-      if (!redis) return "公告存储未连接。";
+      if (!redis) return $t("index.text_9579dede53");
 
       pushing = true;
       try {
         const reply = context.reply;
         const result = await createNoticeDelivery(redis, deliveryHost).push(signal, undefined, undefined,
           async (id, processed, selected, confirmed, accounts) => {
-            const text = processed === 0 ? `公告 ${id} 开始推送，共 ${accounts} 个账号、${selected} 个目标群。`
-              : `推送进度 ${processed}/${selected} · 确认送达 ${confirmed}。`;
+            const text = processed === 0 ? $t("index.text_8c370436a4", { "id": id, "accounts": accounts, "selected": selected })
+              : $t("index.text_79101fc7af", { "processed": processed, "selected": selected, "confirmed": confirmed });
             log(processed === 0 ? "info" : "debug", text);
             await reply?.(text, true);
           });
-        if (!result.noticeId) return result.stopped === "cancelled" ? "推送已中断。" : "当前没有可推送的公告。";
+        if (!result.noticeId) return result.stopped === "cancelled" ? $t("index.text_bd11e940e8") : $t("index.text_4302a17289");
         const count = (state: DeliveryReceipt["state"]) =>
           result.receipts.filter((receipt) => receipt.state === state).length;
         const lines = [
-          `公告 ${result.noticeId} · ${result.selected} 个目标群`,
-          `确认送达 ${count("confirmed")} · 未发出 ${count("not-sent")} · 结果未确认 ${count("unknown")}`,
+          $t("index.text_6e6a706ba5", { "noticeId": result.noticeId, "selected": result.selected }),
+          $t("index.text_97e92a3f7d", { "value1": count("confirmed"), "value2": count("not-sent"), "value3": count("unknown") }),
         ];
         log(result.stopped === "storage-error" ? "error" : result.stopped || result.discoveryFailures ? "warn" : "info",
           `${lines[0]}。${lines[1]}。`);
@@ -216,23 +219,23 @@ export function createNoticePlugin(
           }
         }
         if (result.accountTotals.size) {
-          lines.push("按账号确认送达：", ...[...result.accountTotals].map(([botId, total]) =>
-            `机器人 ${botId} · ${confirmedByAccount.get(botId) ?? 0}/${total}`));
+          lines.push($t("index.text_6ce2f988ae"), ...[...result.accountTotals].map(([botId, total]) =>
+            $t("index.text_ea8dd79188", { "botId": botId, "value2": confirmedByAccount.get(botId) ?? 0, "total": total })));
         }
         if (failed.length) {
-          lines.push(`未确认送达的群：${failed.slice(0, failedGroupLimit).join("、")}`);
-          if (failed.length > failedGroupLimit) lines.push(`其余 ${failed.length - failedGroupLimit} 个群见逐群回执。`);
+          lines.push($t("index.text_62acebdbf8", { "value1": failed.slice(0, failedGroupLimit).join("、") }));
+          if (failed.length > failedGroupLimit) lines.push($t("index.text_4f6d3657e7", { "value1": failed.length - failedGroupLimit }));
         }
-        if (result.alreadyClaimed) lines.push(`已跳过 ${result.alreadyClaimed} 个已有投递记录的群。`);
-        if (result.discoveryFailures) lines.push(`${result.discoveryFailures} 个机器人未能读取目标群。`);
-        if (result.stopped === "notice-changed") lines.push("公告发生变更，已停止后续发送。");
-        if (result.stopped === "storage-error") lines.push("投递记录写入未确认，已停止后续发送。");
-        if (result.stopped === "cancelled") lines.push("推送已中断。");
-        lines.push(`发送 #公告推送回执 ${result.noticeId} 查看逐群回执。`);
+        if (result.alreadyClaimed) lines.push($t("index.text_983b7608a1", { "alreadyClaimed": result.alreadyClaimed }));
+        if (result.discoveryFailures) lines.push($t("index.text_57f56b207c", { "discoveryFailures": result.discoveryFailures }));
+        if (result.stopped === "notice-changed") lines.push($t("index.text_1251d3b7e5"));
+        if (result.stopped === "storage-error") lines.push($t("index.text_1ecef0a69d"));
+        if (result.stopped === "cancelled") lines.push($t("index.text_bd11e940e8"));
+        lines.push($t("index.text_1fd24f13e1", { "noticeId": result.noticeId }));
         return lines.join("\n");
       } catch {
-        log("error", "公告推送未完成，请查看投递回执。");
-        return "公告推送未完成，请查看投递回执。";
+        log("error", $t("index.text_6d90a892e8"));
+        return $t("index.text_6d90a892e8");
       } finally {
         pushing = false;
       }
@@ -243,28 +246,28 @@ export function createNoticePlugin(
       const groupId = target === undefined ? undefined : Number(target);
       if ((noticeId !== undefined && !/^\d{5}[A-Z]{3}$/u.test(noticeId)) || rest.length ||
           (target !== undefined && (!/^[1-9]\d*$/u.test(target) || !Number.isSafeInteger(groupId)))) {
-        return "用法：#撤回已发公告 [编号] [群号]";
+        return $t("index.text_0da2c438ca");
       }
       const redis = getRedis();
-      if (!redis) return "公告存储未连接。";
+      if (!redis) return $t("index.text_9579dede53");
 
       try {
         const result = await createNoticeDelivery(redis, deliveryHost).recall({ noticeId, groupId, signal });
-        if (!result.noticeId) return result.stopped === "cancelled" ? "撤回已中断。" : "当前没有可撤回的公告。";
-        if (!result.selected) return `公告 ${result.noticeId} 没有可撤回的已确认消息。`;
+        if (!result.noticeId) return result.stopped === "cancelled" ? $t("index.text_c16a288d52") : $t("index.text_01a3c9774b");
+        if (!result.selected) return $t("index.text_597375fb3e", { "noticeId": result.noticeId });
         const count = (state: "confirmed" | "not-sent" | "unknown") =>
           result.receipts.filter((receipt) => receipt.recall === state).length;
         const lines = [
-          `公告 ${result.noticeId} · ${result.selected} 条已确认发送的消息`,
-          `撤回已确认 ${count("confirmed")} · 撤回未发出 ${count("not-sent")} · 撤回未确认 ${count("unknown")}`,
+          $t("index.text_58bdb85875", { "noticeId": result.noticeId, "selected": result.selected }),
+          $t("index.text_7388115620", { "value1": count("confirmed"), "value2": count("not-sent"), "value3": count("unknown") }),
         ];
-        if (result.alreadyClaimed) lines.push(`已跳过 ${result.alreadyClaimed} 条已有撤回记录的消息。`);
-        if (result.stopped === "storage-error") lines.push("撤回记录写入未确认，已停止后续撤回。");
-        if (result.stopped === "cancelled") lines.push("撤回已中断。");
-        lines.push(`发送 #公告推送回执 ${result.noticeId} 查看逐群结果。`);
+        if (result.alreadyClaimed) lines.push($t("index.text_56e6e2ef8f", { "alreadyClaimed": result.alreadyClaimed }));
+        if (result.stopped === "storage-error") lines.push($t("index.text_db1472dce7"));
+        if (result.stopped === "cancelled") lines.push($t("index.text_c16a288d52"));
+        lines.push($t("index.text_09ecd4d4f3", { "noticeId": result.noticeId }));
         return lines.join("\n");
       } catch {
-        return "已发公告撤回未完成，请查看回执。";
+        return $t("index.text_00b363e84f");
       }
     }),
     "#公告推送回执": owner(async (argument) => {
@@ -272,22 +275,22 @@ export function createNoticePlugin(
       const noticeId = first && /^\d{5}[A-Z]{3}$/u.test(first.toUpperCase()) ? first.toUpperCase() : undefined;
       const page = Number((noticeId ? second : first) ?? 1);
       if (rest.length || (!noticeId && second !== undefined) || !Number.isSafeInteger(page) || page < 1) {
-        return "用法：#公告推送回执 [编号] [页码]";
+        return $t("index.text_5c14524d87");
       }
       const redis = getRedis();
-      if (!redis) return "公告存储未连接。";
+      if (!redis) return $t("index.text_9579dede53");
 
       try {
         const result = await createNoticeDelivery(redis, deliveryHost).receipts(noticeId);
-        if (!result?.receipts.length) return "没有公告推送回执。";
+        if (!result?.receipts.length) return $t("index.text_34cacb6dae");
         const receiptSize = 12;
         const pages = Math.ceil(result.receipts.length / receiptSize);
-        if (page > pages) return `公告 ${result.noticeId} 的回执共有 ${pages} 页。`;
+        if (page > pages) return $t("index.text_a24a822bfe", { "noticeId": result.noticeId, "pages": pages });
         const lines = result.receipts.slice((page - 1) * receiptSize, page * receiptSize)
-          .map((receipt) => `群 ${receipt.groupId} · 机器人 ${receipt.botId} · ${describeReceipt(receipt)}`);
-        return [`公告 ${result.noticeId} 推送回执（${page}/${pages} 页）`, ...lines].join("\n");
+          .map((receipt) => $t("index.text_0878dc62cb", { "groupId": receipt.groupId, "botId": receipt.botId, "value3": describeReceipt(receipt) }));
+        return [$t("index.text_2e42d76eee", { "noticeId": result.noticeId, "page": page, "pages": pages }), ...lines].join("\n");
       } catch {
-        return "无法读取公告推送回执。";
+        return $t("index.text_faf15e2777");
       }
     }),
   }) };
@@ -297,14 +300,14 @@ function describeReceipt(receipt: DeliveryReceipt): string {
   switch (receipt.state) {
     case "confirmed": {
       const suffix = receipt.recall && {
-        confirmed: "撤回已确认", "not-sent": "撤回未发出",
-        unknown: "撤回结果未确认", pending: "撤回等待确认或进程中断",
+        confirmed: $t("index.text_3d2ef05af4"), "not-sent": $t("index.text_692c05335e"),
+        unknown: $t("index.text_ea4a50ce05"), pending: $t("index.text_fc8f225fd5"),
       }[receipt.recall];
-      return [`确认送达 · 消息 ${receipt.messageId}`, suffix].filter(Boolean).join(" · ");
+      return [$t("index.text_008627ff5f", { "messageId": receipt.messageId }), suffix].filter(Boolean).join(" · ");
     }
-    case "not-sent": return "确认未发出";
-    case "unknown": return "发出结果未确认";
-    case "pending": return "等待确认或进程中断";
+    case "not-sent": return $t("index.text_48e31ef421");
+    case "unknown": return $t("index.text_dd7831b4a6");
+    case "pending": return $t("index.text_1075a9178b");
   }
 }
 
@@ -317,7 +320,7 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
   } {
   let log = noticeLogger("info");
   try { log = noticeLogger(configuredNoticeLogLevel()); }
-  catch { log("warn", "无法读取独立公告日志配置，使用默认级别 info。"); }
+  catch { log("warn", $t("index.text_45aa3ff05f")); }
   const module = createNoticePlugin(hostRedis, noticeGroups, signal, log);
   let aliases: Record<string,string> | undefined;
   let officialFallback: ((message: string, context: NoticeFallbackContext) => Promise<OfficialNoticeReply | undefined>) | undefined;
@@ -335,7 +338,7 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
       disposers.push(async () => { disposed = true; cancel?.(); await stop?.(); });
     }
   } catch {
-    log("warn", "无法读取公告定时配置，定时推送未启动。");
+    log("warn", $t("index.text_068c588dde"));
   }
   try {
     const root = new URL("../../", import.meta.url);
@@ -354,7 +357,7 @@ export function createModule({ groups, noticeGroups = groups, signal, whenNotice
     Object.assign(module.commands, expiry.commands, official.fullPushCommand(expiry.run));
     disposers.push(expiry.dispose);
   } catch {
-    console.warn("[notice] 无法读取米游社公告推送配置。");
+    console.warn($t("index.text_969d375f07"));
   }
   if (!disposers.length) return module;
   return {
